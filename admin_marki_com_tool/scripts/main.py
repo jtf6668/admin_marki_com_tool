@@ -727,6 +727,264 @@ def get_current_year_arrears(charge_system_name=None, community_name=None):
             print(f"  - {name}")
 
 
+def get_today_time_range():
+    """
+    获取今天的开始和结束时间戳
+
+    Returns:
+        (start_time, end_time) 时间戳元组
+    """
+    now = datetime.now()
+    # 今天开始时间：00:00:00
+    start_of_day = datetime(now.year, now.month, now.day, 0, 0, 0)
+    # 今天结束时间：23:59:59
+    end_of_day = datetime(now.year, now.month, now.day, 23, 59, 59)
+
+    # 转换为时间戳
+    start_time = int(start_of_day.timestamp())
+    end_time = int(end_of_day.timestamp())
+
+    return start_time, end_time
+
+
+def get_deal_log(community_id: str, start_time: int, end_time: int) -> dict:
+    """
+    获取小区指定时间范围内的交易记录
+
+    Args:
+        community_id: 小区ID
+        start_time: 开始时间戳
+        end_time: 结束时间戳
+
+    Returns:
+        交易记录数据字典
+    """
+    import random
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+
+    # 使用正确的参数名
+    payload = {
+        "__r__": random.random(),
+        "current": 1,
+        "dealType": [],
+        "payChannel": [],
+        "maxDealTime": end_time,
+        "minDealTime": start_time,
+        "communityId": int(community_id),
+        "assetID": 0,
+        "page": 1,
+        "pageSize": 1000  # 获取足够多的记录
+    }
+
+    try:
+        response = requests.post(
+            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/getDealLogPost",
+            json=payload,
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"接口调用失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            return None
+
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get('code') != 0:
+            logger.error(f"获取交易记录失败: {data.get('msg')}")
+            return None
+
+        return data.get('data', {})
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"接口调用发生异常: {e}")
+        return None
+
+
+def format_today_stats(community_name: str, deal_data: dict) -> str:
+    """
+    格式化今日统计数据
+
+    Args:
+        community_name: 小区名称
+        deal_data: 交易数据
+
+    Returns:
+        格式化后的统计文本
+    """
+    today_str = datetime.now().strftime("%Y年%m月%d日")
+    output = [f"### {community_name} {today_str} 收入统计\n"]
+
+    list_data = deal_data.get('list', [])
+
+    # 统计各项数据
+    total_income = deal_data.get('incomeTotalAmount', 0) / 100.0
+    total_bill = deal_data.get('billTotalAmount', 0) / 100.0
+    total_deposit = deal_data.get('depositTotalAmount', 0) / 100.0
+
+    cash_income = 0  # 现金收入（需要根据payChannel判断）
+    prepay_recharge = 0  # 预存款充值 (dealType=1)
+    deposit_collect = 0  # 押金收取 (dealType=5)
+    pay_count = len(list_data)  # 缴费笔数
+
+    # 按收费项统计（需要确认收费项字段，这里先按dealType统计）
+    charge_item_stats = {}
+    # 按支付方式统计
+    pay_channel_stats = {}
+    # 按收款员统计
+    payee_stats = {}
+
+    deal_type_map = {
+        1: "预存款充值",
+        2: "预存款退款",
+        3: "账单实收",
+        4: "账单退款",
+        5: "收取押金",
+        6: "退还押金"
+    }
+
+    for deal in list_data:
+        deal_type = deal.get('dealType')
+        income_amount = deal.get('incomeAmount', 0)
+        income_yuan = income_amount / 100.0
+        pay_channel = deal.get('payChannelStr', '未知')
+        payee = deal.get('payee', '未知')
+
+        # 预存款充值
+        if deal_type == 1:
+            prepay_recharge += income_yuan
+        # 押金收取
+        elif deal_type == 5:
+            deposit_collect += income_yuan
+
+        # 按交易类型统计（作为收费项统计）
+        type_name = deal_type_map.get(deal_type, f'其他({deal_type})')
+        if type_name not in charge_item_stats:
+            charge_item_stats[type_name] = 0
+        charge_item_stats[type_name] += income_yuan
+
+        # 按支付方式统计
+        if pay_channel not in pay_channel_stats:
+            pay_channel_stats[pay_channel] = 0
+        pay_channel_stats[pay_channel] += income_yuan
+
+        # 按收款员统计
+        if payee not in payee_stats:
+            payee_stats[payee] = 0
+        payee_stats[payee] += income_yuan
+
+    # 基础统计
+    output.append(f"**总收入**: ¥{total_income:,.2f}")
+    output.append(f"**账单实收**: ¥{total_bill:,.2f}")
+    output.append(f"**预存款充值**: ¥{prepay_recharge:,.2f}")
+    output.append(f"**押金收取**: ¥{deposit_collect:,.2f}")
+    output.append(f"**缴费笔数**: {pay_count} 笔")
+    output.append("")
+
+    # 按收费项统计
+    output.append("**各收费项收入情况**:")
+    for item_name, amount in charge_item_stats.items():
+        output.append(f"  - {item_name}: ¥{amount:,.2f}")
+    output.append("")
+
+    # 按支付方式统计
+    output.append("**各支付方式收入情况**:")
+    for channel_name, amount in pay_channel_stats.items():
+        output.append(f"  - {channel_name}: ¥{amount:,.2f}")
+    output.append("")
+
+    # 按收款员统计
+    output.append("**各收款员收入情况**:")
+    for payee_name, amount in payee_stats.items():
+        output.append(f"  - {payee_name}: ¥{amount:,.2f}")
+
+    return "\n".join(output)
+
+
+def get_community_today_stats(community_id: str, community_name: str = None) -> str:
+    """
+    获取小区今日收入统计
+
+    Args:
+        community_id: 小区ID
+        community_name: 小区名称（可选）
+
+    Returns:
+        统计结果文本
+    """
+    start_time, end_time = get_today_time_range()
+    deal_data = get_deal_log(community_id, start_time, end_time)
+
+    if deal_data is None:
+        return "获取交易记录失败"
+
+    if not community_name:
+        community_name = "该小区"
+
+    output = format_today_stats(community_name, deal_data)
+    logger.info(f"成功获取小区 {community_id} 的今日收入统计")
+    print(f"返回数据：{output}")
+    return output
+
+
+def get_today_stats(charge_system_name=None, community_name=None):
+    """
+    通过名称查询小区今日收入统计（智能模式）
+
+    Args:
+        charge_system_name: 收费系统名称
+        community_name: 小区名称
+    """
+    # 检查必要参数
+    if not charge_system_name:
+        print("NEED_INFO: 请提供收费系统名称")
+        print("提示：可以先使用 list_charge_systems 命令查看可用的收费系统")
+        return
+
+    if not community_name:
+        print("NEED_INFO: 请提供小区名称")
+        return
+
+    # 获取收费系统映射
+    system_map = get_user_charge_systems(return_map=True)
+    if not system_map:
+        print("获取收费系统列表失败")
+        return
+
+    # 查找收费系统 ID
+    charge_system_id = system_map.get(charge_system_name)
+    if not charge_system_id:
+        print(f"未找到收费系统：{charge_system_name}")
+        print("可用的收费系统：" + ", ".join(system_map.keys()))
+        return
+
+    # 搜索小区
+    community_map = search_community(charge_system_id, community_name, return_map=True)
+    if community_map is None:
+        print("搜索小区失败")
+        return
+
+    if not community_map:
+        print(f"未找到匹配的小区：{community_name}")
+        return
+
+    if len(community_map) == 1:
+        # 只有一个匹配，直接查询
+        comm_name, comm_id = next(iter(community_map.items()))
+        print(f"找到小区：{comm_name}")
+        get_community_today_stats(str(comm_id), comm_name)
+    else:
+        # 多个匹配，列出供用户选择
+        print(f"找到多个匹配的小区，请使用完整的小区名称重新查询：")
+        for name in community_map.keys():
+            print(f"  - {name}")
+
+
 def logout() -> str:
     """
     登出马克账号。
@@ -825,6 +1083,23 @@ if __name__ == "__main__":
         else:
             community_id = sys.argv[2]
             get_community_current_year_arrears(community_id)
+    elif command == "get_today_stats":
+        # 查询小区今日收入统计
+        if len(sys.argv) < 4:
+            print("错误：请提供收费系统名称和小区名称")
+            print("用法: python3 main.py get_today_stats <收费系统名称> <小区名称>")
+        else:
+            charge_system_name = sys.argv[2]
+            community_name = sys.argv[3]
+            get_today_stats(charge_system_name, community_name)
+    elif command == "get_community_today_stats":
+        # 通过小区ID查询今日收入统计
+        if len(sys.argv) < 3:
+            print("错误：请提供小区ID参数")
+            print("用法: python3 main.py get_community_today_stats <小区ID>")
+        else:
+            community_id = sys.argv[2]
+            get_community_today_stats(community_id)
     else:
         print("错误：未知的指令或参数不足")
         print("可用指令:")
@@ -834,6 +1109,8 @@ if __name__ == "__main__":
         print("  search_community <收费系统名称> <小区关键词> - 搜索小区")
         print("  get_arrears <收费系统名称> <小区名称> - 通过名称查询欠费")
         print("  get_current_year_arrears <收费系统名称> <小区名称> - 通过名称查询本年度物业费欠费")
-        print("  get_custom_range_arrears <收费系统名称> <小区名称> <日期范围> - 自定义时间范围查询欠费")
+        print("  get_custom_range_arrears <收费系统名称> <小区名称> <开始日期> <结束日期> - 自定义时间范围查询欠费")
+        print("  get_today_stats <收费系统名称> <小区名称> - 查询小区今日收入统计")
         print("  get_community_total_arrears <小区ID> - 通过ID查询欠费（旧版）")
         print("  get_community_current_year_arrears <小区ID> - 通过ID查询本年度物业费欠费")
+        print("  get_community_today_stats <小区ID> - 通过ID查询今日收入统计")
