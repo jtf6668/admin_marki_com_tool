@@ -6,11 +6,12 @@ import socket
 import requests
 import subprocess
 import urllib.parse
-from utils import SessionManager # 导入工具类
+from utils import SessionManager
 from logger import logger
 
 
 API_BASE_URL = "https://admin-api.markiapp.com"
+CHARGE_API_BASE_URL = "https://charge-api-test.markiapp.com"
 BASE_DOMAIN = "markiapp.com"
 #AUTH_URL = f"https://os-lgn.{BASE_DOMAIN}/lgn/login/authorize.do" # 生产环境
 #APP_ID = "1435186595"
@@ -21,15 +22,17 @@ APP_ID = "1435186595"
 
 session_mgr = SessionManager()
 
-def get_my_team() -> str:
-    """
-    查看我加入的马克智慧服务平台的团队列表信息。
-    """
 
+def ensure_authenticated() -> dict:
+    """
+    确保用户已登录，如果未登录则启动授权服务器。
+
+    Returns:
+        cookies dict 如果已登录，None 如果需要登录
+    """
     ck_dict = session_mgr.get_cookies_dict()
 
     if not ck_dict:
-
         logger.warning("未检测到有效的登录 Cookie，准备启动授权服务器。")
 
         #检查是否有正在运行的授权服务器，如果有，直接使用缓存的 URL 提示用户登录
@@ -38,7 +41,7 @@ def get_my_team() -> str:
             print(f"AUTH_REQUIRED:检测到您未登录。")
             print(f"1. 请点击此链接登录：{existing_url}")
             print(f"2. 登录成功后，此窗口会自动检测到状态，请稍等片刻后再次询问。")
-            return
+            return None
 
         # 启动接收器（异步非阻塞）
         # 注意：这里假设 auth_server.py 在同一目录下
@@ -47,23 +50,23 @@ def get_my_team() -> str:
             [sys.executable, server_path],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,  # 以文本模式读取输出
-            bufsize=1   # 行缓冲
+            text=True,
+            bufsize=1
         )
 
-        # 2. 读取子进程输出，直到拿到端口号
+        # 读取子进程输出，直到拿到端口号
         real_port = None
         for line in process.stdout:
             if line.startswith("REAL_PORT:"):
                 real_port = line.strip().split(":")[1]
                 break
-        
+
         if not real_port:
             print("错误：无法获取授权服务器端口")
-            return
-        
+            return None
+
         logger.info(f"授权服务器已启动，监听端口: {real_port}")
-        
+
         login_url = generate_login_url(real_port)
 
         # 核心：保存 PID 和 URL 供下次查询使用
@@ -74,50 +77,37 @@ def get_my_team() -> str:
         print(f"2. 登录成功后，此窗口会自动检测到状态，请稍等片刻后再次询问。")
 
         logger.info(f"提示用户登录，链接: {login_url}")
-        return
-    
+        return None
+
+    return ck_dict
+
+
+def get_headers_with_cookies(ck_dict: dict, additional_headers: dict = None) -> dict:
+    """
+    构建带有 cookies 的请求头
+
+    Args:
+        ck_dict: cookies 字典
+        additional_headers: 额外的请求头
+
+    Returns:
+        完整的请求头字典
+    """
     # 将字典拼接成字符串
     raw_cookies = "; ".join([f"{k}={v}" for k, v in ck_dict.items()])
-
-    #raw_cookies = 'osudb_lang=zh-cn; osudb_third=04e6834433a7b9bd726ad0455b3d35f23f29314d648f8574bedebb415d4391f8a4db0e1e5b1e938605f6385669f5522181b96a305a151a93364618e31cb74d4b0647fdfe2604801f4e49b62ce1cd0d0860f759726195f778e138ef1ecbc513f11d12256d7f57265f68836526e6d078951a2aa322a0dd5e40e9539c4bcd05bc0805a4f1eca2a5212a6946a2e7543c3810ddd074a0fa560173e0a325a21adb467347b6744f9ad1483cd72d865280e1ac1c9924835d7a02147eea191ee93bc59513a5e799cf9d76969a1a7733c41639a41060d73876f54c2abded4f17156aca5f0e75e6554458f658b009298083e5060ce8db75f58dc0a8c16289103a3429ae0533; osudb_uid=3801824535; osudb_appid=1435186595; osudb_oar=29ee8d4097b1c7a2a70ad05f232d609d9610d99b9afb8601c0f5ef4e000f499a39edb8e3a73a3aac1246d39671551a39387fe7387e15aaea7daa889c8823b23c46471829f57d76665dff1707a577d3ef54131a6db3b5eb1063447e3e5155c4b7cc1cf0cee86fad702f004499d0946c2e681a6919a31cd5167daa5dfee2fa660c7963e696ff791c0c0c3be1f0414e617975bab41e24ae7f59c5864be376ea96996348b867ebcc089cd42da10526a3a2a099624980c5d1ff60dc503a51d36167e32aad07b3696a86c6d2601865a6765b5917fc6f176b84d3e45e74fb02338d3d77b5c8b020ce40939c0907820e2b5e1b91938d55a8b8eb0a51ebf4453baa9dd586; osudb_c=00004c32107a00017000becf871c4f7de439328ceb11b82f8731f3c84e7690337f0d259ef40badbf097b074d48534164d6f75e9f7d2a22a0f5650272ce1b18984c608ea2bbe47cb8679320e11fa9650e719ed97a7f1a44eaee925e8fa8784504336ad98f5df764aa3de337be30053452bf60b8c7957e700f5c5f; osudb_sex=0; osudb_param=; osudb_ustate=1; osudb_nickname=snail2swift; osudb_avatar=https://thirdwx.qlogo.cn/mmopen/vi_32/DYAIOgq83eqdLLDU791JuGXcOaV52o0CGesPzzb8sWdm2bDeicQkvIcyKylASzx05zrcMSfoZtg2IotSn5423Bg/132'
-
 
     headers = {
             "Cookie": raw_cookies,
             "Content-Type": "application/json"
     }
 
-    try:
-        # 发起 HTTP GET 请求
-        response = requests.get(
-            f"{API_BASE_URL}/api/v1/getMyTeam?page=1&pageSize=100", 
-            headers=headers,
-            timeout=10
-        )
-        
-        # 检查状态码
-        if response.status_code != 200:
-            logger.error(f"接口调用失败，状态码: {response.status_code}, 响应内容: {response.text}")
-            return "请求异常，请稍后再试。"
-        
-        response.raise_for_status()
-        data = response.json()
+    if additional_headers:
+        headers.update(additional_headers)
 
-        # 格式化返回给 AI 的结果。返回内容越清晰，AI 总结得越好。
-        output = format_team_list(data)
+    return headers
 
-        logger.info("成功获取团队列表信息")
-
-        print(f"返回数据：{output}")
-        return output
-
-    except requests.exceptions.RequestException as e:
-        logger.error(f"接口调用发生异常: {e}")
-        return f"接口调用发生异常: {str(e)}"
 
 def find_available_port(start_port=8080):
-    # 此处逻辑与 auth_server 保持一致，确保两者算的端口是一样的
-    # 或者由 main.py 算出端口后，作为命令行参数传给 auth_server.py
     port = start_port
     while port < start_port + 100:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -128,13 +118,14 @@ def find_available_port(start_port=8080):
                 port += 1
     return start_port
 
+
 def generate_login_url(port):
     """生成给用户点击的授权链接"""
     params = {
         "appid": APP_ID,
-        "callback": f"http://localhost:{port}/callback", # 假设你本地有个回调处理
+        "callback": f"http://localhost:{port}/callback",
         "ctype": "json",
-        "type": "mobile", # 示例只支持邮箱
+        "type": "mobile",
         "state": "openclaw_auth",
         "autoTime": 7,
         "backEnd": 1
@@ -142,8 +133,42 @@ def generate_login_url(port):
     query_string = urllib.parse.urlencode(params)
     return f"{AUTH_URL}?{query_string}"
 
+
+def get_my_team() -> str:
+    """
+    查看我加入的马克智慧服务平台的团队列表信息。
+    """
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return
+
+    headers = get_headers_with_cookies(ck_dict)
+
+    try:
+        response = requests.get(
+            f"{API_BASE_URL}/api/v1/getMyTeam?page=1&pageSize=100",
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"接口调用失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            return "请求异常，请稍后再试。"
+
+        response.raise_for_status()
+        data = response.json()
+
+        output = format_team_list(data)
+        logger.info("成功获取团队列表信息")
+        print(f"返回数据：{output}")
+        return output
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"接口调用发生异常: {e}")
+        return f"接口调用发生异常: {str(e)}"
+
+
 def format_team_list(raw_response):
-    # 解析 JSON
     if isinstance(raw_response, str):
         res = json.loads(raw_response)
     else:
@@ -156,67 +181,364 @@ def format_team_list(raw_response):
     if not teams:
         return "您还没有加入任何团队。"
 
-    # 角色映射（请根据你系统的实际定义修改）
     role_map = {
         1: "创建者",
         2: "管理员",
         3: "普通成员"
     }
 
-    # 构建 Markdown 格式的输出
     output = ["### 您的团队列表\n"]
-    output.append("| 团队ID | 团队名称 | 角色 | 加入时间 |")
-    output.append("| :--- | :--- | :--- | :--- |")
+    output.append("| 团队名称 | 角色 | 加入时间 |")
+    output.append("| :--- | :--- | :--- |")
 
     for item in teams:
-        team_id = item.get('teamid')
         name = item.get('name')
-        # 转换角色
         role_id = item.get('role')
         role_name = role_map.get(role_id, f"其他({role_id})")
-        # 转换时间戳为可读格式
         timestamp = item.get('crttime')
         join_time = time.strftime("%Y-%m-%d %H:%M", time.localtime(timestamp))
-        
-        output.append(f"| {team_id} | {name} | {role_name} | {join_time} |")
+
+        output.append(f"| {name} | {role_name} | {join_time} |")
 
     return "\n".join(output)
 
-def loginUserInfo():
+
+def get_user_charge_systems(return_map=False):
     """
-    获取当前登录马克系统的用户信息。
+    获取用户的收费系统列表
+
+    Args:
+        return_map: 如果为 True，返回 {名称: id} 字典；否则打印列表给用户
     """
-    # 这里添加获取用户信息的逻辑
-    # 例如，读取本地保存的 Cookie 信息并解析出用户信息
-    session = session_mgr.get_cookies_dict()
-    if session and "osudb_uid" in session:
-        user_info = {
-            "uid": session.get("osudb_uid")
-        }
-        logger.info(f"当前登录用户信息: {user_info}")
-        return user_info
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None if return_map else None
+
+    headers = get_headers_with_cookies(ck_dict)
+
+    try:
+        response = requests.get(
+            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/getUserChargeSysList",
+            params={"page": 1, "pageSize": 100},
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"接口调用失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            return None if return_map else "请求异常，请稍后再试。"
+
+        data = response.json()
+
+        if data.get('code') != 0:
+            msg = f"获取失败：{data.get('msg')}"
+            return None if return_map else msg
+
+        systems_list = data.get('data', {}).get('list', [])
+
+        if return_map:
+            system_map = {}
+            for sys in systems_list:
+                name = sys.get('name')
+                sys_id = sys.get('csID') or sys.get('id')
+                if name and sys_id:
+                    system_map[name] = sys_id
+            return system_map
+        else:
+            return format_charge_systems_list(systems_list)
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"接口调用发生异常: {e}")
+        return None if return_map else f"接口调用发生异常: {str(e)}"
+
+
+def format_charge_systems_list(systems_list):
+    if not systems_list:
+        return "没有找到可用的收费系统。"
+
+    output = ["### 可用的收费系统\n"]
+    output.append("| 序号 | 收费系统名称 | 绑定团队 |")
+    output.append("| :--- | :--- | :--- |")
+
+    for idx, sys in enumerate(systems_list, 1):
+        name = sys.get('name', '')
+        bind_item_name = sys.get('bindItemName', '')
+        output.append(f"| {idx} | {name} | {bind_item_name} |")
+
+    return "\n".join(output)
+
+
+def search_community(charge_system_id, keyword, return_map=False):
+    """
+    搜索小区
+
+    Args:
+        charge_system_id: 收费系统 ID
+        keyword: 小区名称关键词
+        return_map: 如果为 True，返回 {名称: id} 字典；否则打印列表给用户
+    """
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None if return_map else None
+
+    headers = get_headers_with_cookies(ck_dict)
+
+    try:
+        response = requests.get(
+            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/getCommunityList",
+            params={
+                "chargeSystemID": charge_system_id,
+                "page": 1,
+                "pageSize": 100,
+                "kw": keyword
+            },
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"接口调用失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            return None if return_map else "请求异常，请稍后再试。"
+
+        data = response.json()
+
+        if data.get('code') != 0:
+            msg = f"获取失败：{data.get('msg')}"
+            return None if return_map else msg
+
+        community_list = data.get('data', {}).get('list', [])
+
+        if return_map:
+            community_map = {}
+            for comm in community_list:
+                name = comm.get('name')
+                comm_id = comm.get('id')
+                if name and comm_id:
+                    community_map[name] = comm_id
+            return community_map
+        else:
+            return format_community_list(community_list)
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"接口调用发生异常: {e}")
+        return None if return_map else f"接口调用发生异常: {str(e)}"
+
+
+def format_community_list(community_list):
+    if not community_list:
+        return "没有找到匹配的小区。"
+
+    output = ["### 找到的小区\n"]
+    output.append("| 序号 | 小区名称 | 地址 | 房屋数 |")
+    output.append("| :--- | :--- | :--- | :--- |")
+
+    for idx, comm in enumerate(community_list, 1):
+        name = comm.get('name', '')
+        address = comm.get('address', '')
+        house_num = comm.get('houseNum', 0)
+        output.append(f"| {idx} | {name} | {address} | {house_num} |")
+
+    return "\n".join(output)
+
+
+def get_community_total_arrears(community_id: str) -> str:
+    """
+    获取小区截至目前全部收费项目欠费总额。
+
+    Args:
+        community_id: 小区ID
+    """
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+
+    try:
+        response = requests.get(
+            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/getArrearsHouseList",
+            params={
+                "id": community_id,
+                "idType": 1,
+                "assetType": 1,
+                "page": 1,
+                "pageSize": 20
+            },
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"接口调用失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            return "请求异常，请稍后再试。"
+
+        response.raise_for_status()
+        data = response.json()
+
+        output = format_arrears_result(data)
+        logger.info(f"成功获取小区 {community_id} 的欠费总额信息")
+        print(f"返回数据：{output}")
+        return output
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"接口调用发生异常: {e}")
+        return f"接口调用发生异常: {str(e)}"
+
+
+def format_arrears_result(raw_response):
+    if isinstance(raw_response, str):
+        res = json.loads(raw_response)
     else:
-        logger.warning("未检测到有效的登录 Session")
-        return None
+        res = raw_response
+
+    if res.get('code') != 0:
+        return f"获取失败：{res.get('msg')}"
+
+    data = res.get('data', {})
+    total_arrears = data.get('totalArrearsAmount', 0)
+    total_arrears_yuan = total_arrears / 100.0
+
+    total_houses = data.get('total', 0)
+    community_name = data.get('communityName', '')
+
+    output = ["### 小区欠费总额统计\n"]
+    if community_name:
+        output.append(f"**小区名称**: {community_name}")
+    output.append(f"**欠费总额**: ¥{total_arrears_yuan:,.2f}")
+    output.append(f"**涉及房屋数**: {total_houses} 户")
+
+    return "\n".join(output)
+
+
+def get_arrears(charge_system_name=None, community_name=None):
+    """
+    通过名称查询欠费（智能模式）
+
+    Args:
+        charge_system_name: 收费系统名称
+        community_name: 小区名称
+    """
+    # 检查必要参数
+    if not charge_system_name:
+        print("NEED_INFO: 请提供收费系统名称")
+        print("提示：可以先使用 list_charge_systems 命令查看可用的收费系统")
+        return
+
+    if not community_name:
+        print("NEED_INFO: 请提供小区名称")
+        return
+
+    # 获取收费系统映射
+    system_map = get_user_charge_systems(return_map=True)
+    if not system_map:
+        print("获取收费系统列表失败")
+        return
+
+    # 查找收费系统 ID
+    charge_system_id = system_map.get(charge_system_name)
+    if not charge_system_id:
+        print(f"未找到收费系统：{charge_system_name}")
+        print("可用的收费系统：" + ", ".join(system_map.keys()))
+        return
+
+    # 搜索小区
+    community_map = search_community(charge_system_id, community_name, return_map=True)
+    if community_map is None:
+        print("搜索小区失败")
+        return
+
+    if not community_map:
+        print(f"未找到匹配的小区：{community_name}")
+        return
+
+    if len(community_map) == 1:
+        # 只有一个匹配，直接查询
+        comm_name, comm_id = next(iter(community_map.items()))
+        print(f"找到小区：{comm_name}")
+        get_community_total_arrears(str(comm_id))
+    else:
+        # 多个匹配，列出供用户选择
+        print(f"找到多个匹配的小区，请使用完整的小区名称重新查询：")
+        for name in community_map.keys():
+            print(f"  - {name}")
+
 
 def logout() -> str:
     """
     登出马克账号。
     """
-
-    # 这里添加登出逻辑
-    # 例如，清除本地保存的 Cookie 信息
     session_mgr.clear_session()
     logger.info("成功登出马克账号")
     return "已成功登出马克账号。"
 
+
 if __name__ == "__main__":
-    # 简单的路由逻辑
     command = sys.argv[1] if len(sys.argv) > 1 else ""
-    
+
     if command == "get_my_team":
         get_my_team()
     elif command == "logout":
-        logout()
+        result = logout()
+        print(result)
+    elif command == "list_charge_systems":
+        result = get_user_charge_systems(return_map=False)
+        if result:
+            print(result)
+    elif command == "search_community":
+        if len(sys.argv) < 4:
+            print("错误：请提供收费系统名称和小区关键词")
+            print("用法: python3 main.py search_community <收费系统名称> <小区关键词>")
+        else:
+            charge_system_name = sys.argv[2]
+            keyword = sys.argv[3]
+
+            # 先获取收费系统 ID
+            system_map = get_user_charge_systems(return_map=True)
+            if not system_map:
+                print("获取收费系统列表失败")
+            elif charge_system_name not in system_map:
+                print(f"未找到收费系统：{charge_system_name}")
+                print("可用的收费系统：" + ", ".join(system_map.keys()))
+            else:
+                charge_system_id = system_map[charge_system_name]
+                result = search_community(charge_system_id, keyword, return_map=False)
+                if result:
+                    print(result)
+    elif command == "get_arrears":
+        if len(sys.argv) < 3:
+            print("错误：请提供收费系统名称和小区名称")
+            print("用法: python3 main.py get_arrears <收费系统名称> <小区名称>")
+        else:
+            charge_system_name = sys.argv[2]
+            community_name = sys.argv[3] if len(sys.argv) > 3 else None
+            get_arrears(charge_system_name, community_name)
+    elif command == "_get_charge_system_map":
+        # 内部命令：返回 JSON 格式的收费系统映射
+        system_map = get_user_charge_systems(return_map=True)
+        print(json.dumps(system_map, ensure_ascii=False))
+    elif command == "_get_community_map":
+        # 内部命令：返回 JSON 格式的小区映射
+        if len(sys.argv) < 4:
+            print("{}")
+        else:
+            charge_system_id = sys.argv[2]
+            keyword = sys.argv[3]
+            community_map = search_community(charge_system_id, keyword, return_map=True)
+            print(json.dumps(community_map, ensure_ascii=False) if community_map else "{}")
+    elif command == "get_community_total_arrears":
+        # 保留原有命令，兼容旧版本
+        if len(sys.argv) < 3:
+            print("错误：请提供小区ID参数")
+            print("用法: python3 main.py get_community_total_arrears <小区ID>")
+        else:
+            community_id = sys.argv[2]
+            get_community_total_arrears(community_id)
     else:
         print("错误：未知的指令或参数不足")
+        print("可用指令:")
+        print("  get_my_team - 查看我加入的团队列表")
+        print("  logout - 登出马克账号")
+        print("  list_charge_systems - 列出可用的收费系统")
+        print("  search_community <收费系统名称> <小区关键词> - 搜索小区")
+        print("  get_arrears <收费系统名称> <小区名称> - 通过名称查询欠费")
+        print("  get_community_total_arrears <小区ID> - 通过ID查询欠费（旧版）")

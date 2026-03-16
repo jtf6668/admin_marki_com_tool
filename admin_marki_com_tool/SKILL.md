@@ -1,6 +1,6 @@
 ---
 name: admin_marki_com_tool
-description: 用于查询马克智慧物业系统数据的工具
+description: 用于查询马克智慧物业系统数据的工具。可以查看加入的团队列表、登出账号，以及通过小区名查询欠费总额。当用户提到马克物业、小区欠费、收费项目、团队列表等相关内容时，记得使用这个工具。
 requires:
   bins:
     - python3           # 确保系统安装了 python3
@@ -9,9 +9,78 @@ requires:
 # Admin Marki Tool
 这个工具可以让 AI 通过 HTTP 接口访问马克智慧物业系统。
 
+## 安装依赖
+在使用前，请确保安装了所需的依赖包：
+```bash
+pip install -r {baseDir}/requirements.txt
+```
+
+
 # 使用方法
+
+## 核心原则
+- **对用户只展示名称，不展示 ID**
+- **根据用户提供的信息完整程度，采取不同的处理流程**
+
+## 可用命令
 
 AI 应当根据需求选择以下指令运行：
 
 - **查看我加入的团队列表信息**: `python3 {baseDir}/scripts/main.py get_my_team`
 - **登出马克账号**: `python3 {baseDir}/scripts/main.py logout`
+- **列出可用的收费系统**: `python3 {baseDir}/scripts/main.py list_charge_systems`
+- **搜索小区**: `python3 {baseDir}/scripts/main.py search_community <收费系统名称> <小区关键词>`
+- **通过名称查询欠费（推荐）**: `python3 {baseDir}/scripts/main.py get_arrears <收费系统名称> <小区名称>`
+- **通过小区ID查询欠费（旧版）**: `python3 {baseDir}/scripts/main.py get_community_total_arrears <小区ID>`
+
+## 分情况处理流程
+
+### 情况 1：用户提供了完整信息
+**用户示例**："查询波波测试收费系统里碧桂园小区的欠费"
+
+**处理步骤**：
+1. 直接调用 `get_arrears <收费系统名称> <小区名称>`
+2. 展示结果给用户
+
+---
+
+### 情况 2：用户只提供了小区名
+**用户示例**："查询碧桂园小区的欠费"
+
+**处理步骤**：
+1. 先调用 `list_charge_systems` 列出所有可用的收费系统
+2. 询问用户："请问你要查询哪个收费系统下的碧桂园小区？"
+3. 用户选择后，调用 `get_arrears <收费系统名称> <小区名称>`
+4. 展示结果给用户
+
+---
+
+### 情况 3：用户查询非常模糊
+**用户示例**："查询当前小区欠费"、"查欠费"
+
+**处理步骤**：
+1. 先调用 `list_charge_systems` 列出所有可用的收费系统
+2. 询问用户："请问你要查询哪个收费系统？"
+3. 用户选择收费系统后，询问："请问你要查询哪个小区的欠费？"
+4. 用户提供小区名后，调用 `get_arrears <收费系统名称> <小区名称>`
+5. 展示结果给用户
+
+---
+
+### 情况 4：有多个匹配的小区
+**用户示例**："查询波波系统里带有'花园'的小区欠费"
+
+**处理步骤**：
+1. 调用 `search_community <收费系统名称> <小区关键词>` 列出匹配的小区
+2. 询问用户："找到多个匹配小区，请告诉我具体是哪一个？"
+3. 用户选择后，调用 `get_arrears <收费系统名称> <小区名称>`
+4. 展示结果给用户
+
+---
+
+## 内部辅助命令（仅 AI 使用）
+
+这些命令用于获取名称到 ID 的映射，**不要直接展示给用户**：
+
+- `_get_charge_system_map` - 获取 `{收费系统名称: 收费系统ID}` 的 JSON 映射
+- `_get_community_map <收费系统ID> <小区关键词>` - 获取 `{小区名称: 小区ID}` 的 JSON 映射

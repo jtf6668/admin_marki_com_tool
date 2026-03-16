@@ -70,9 +70,10 @@ class SessionManager:
         """检查服务器是否在运行，如果在，返回缓存的 URL"""
         if os.path.exists(self.pid_path) and os.path.exists(self.url_cache_path):
             try:
+                import psutil
                 with open(self.pid_path, 'r') as f:
                     pid = int(f.read().strip())
-                
+
                 # 检查进程是否真的存在
                 if psutil.pid_exists(pid):
                     with open(self.url_cache_path, 'r') as f:
