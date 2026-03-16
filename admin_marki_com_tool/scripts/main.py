@@ -341,12 +341,35 @@ def format_community_list(community_list):
     return "\n".join(output)
 
 
-def get_community_total_arrears(community_id: str) -> str:
+def get_current_year_time_range():
     """
-    获取小区截至目前全部收费项目欠费总额。
+    获取本年度的开始和结束时间戳
+
+    Returns:
+        (start_time, end_time) 时间戳元组
+    """
+    import datetime
+    now = datetime.datetime.now()
+    # 本年度开始时间：1月1日 00:00:00
+    start_of_year = datetime.datetime(now.year, 1, 1, 0, 0, 0)
+    # 本年度结束时间：12月31日 23:59:59
+    end_of_year = datetime.datetime(now.year, 12, 31, 23, 59, 59)
+
+    # 转换为时间戳
+    start_time = int(start_of_year.timestamp())
+    end_time = int(end_of_year.timestamp())
+
+    return start_time, end_time
+
+
+def get_community_total_arrears(community_id: str, start_time: int = None, end_time: int = None) -> str:
+    """
+    获取小区欠费总额。
 
     Args:
         community_id: 小区ID
+        start_time: 开始时间戳（可选）
+        end_time: 结束时间戳（可选）
     """
     ck_dict = ensure_authenticated()
     if not ck_dict:
@@ -354,16 +377,24 @@ def get_community_total_arrears(community_id: str) -> str:
 
     headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
 
+    params = {
+        "id": community_id,
+        "idType": 1,
+        "assetType": 1,
+        "page": 1,
+        "pageSize": 20
+    }
+
+    # 如果指定了时间范围，添加到参数中
+    if start_time is not None:
+        params["startTime"] = start_time
+    if end_time is not None:
+        params["endTime"] = end_time
+
     try:
         response = requests.get(
             f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/getArrearsHouseList",
-            params={
-                "id": community_id,
-                "idType": 1,
-                "assetType": 1,
-                "page": 1,
-                "pageSize": 20
-            },
+            params=params,
             headers=headers,
             timeout=10
         )
@@ -375,7 +406,7 @@ def get_community_total_arrears(community_id: str) -> str:
         response.raise_for_status()
         data = response.json()
 
-        output = format_arrears_result(data)
+        output = format_arrears_result(data, start_time is not None)
         logger.info(f"成功获取小区 {community_id} 的欠费总额信息")
         print(f"返回数据：{output}")
         return output
@@ -385,7 +416,18 @@ def get_community_total_arrears(community_id: str) -> str:
         return f"接口调用发生异常: {str(e)}"
 
 
-def format_arrears_result(raw_response):
+def get_community_current_year_arrears(community_id: str) -> str:
+    """
+    获取小区本年度物业费欠费金额。
+
+    Args:
+        community_id: 小区ID
+    """
+    start_time, end_time = get_current_year_time_range()
+    return get_community_total_arrears(community_id, start_time, end_time)
+
+
+def format_arrears_result(raw_response, is_time_range=False):
     if isinstance(raw_response, str):
         res = json.loads(raw_response)
     else:
@@ -401,7 +443,12 @@ def format_arrears_result(raw_response):
     total_houses = data.get('total', 0)
     community_name = data.get('communityName', '')
 
-    output = ["### 小区欠费总额统计\n"]
+    if is_time_range:
+        title = "### 小区本年度物业费欠费统计\n"
+    else:
+        title = "### 小区欠费总额统计\n"
+
+    output = [title]
     if community_name:
         output.append(f"**小区名称**: {community_name}")
     output.append(f"**欠费总额**: ¥{total_arrears_yuan:,.2f}")
@@ -463,6 +510,59 @@ def get_arrears(charge_system_name=None, community_name=None):
             print(f"  - {name}")
 
 
+def get_current_year_arrears(charge_system_name=None, community_name=None):
+    """
+    通过名称查询本年度物业费欠费（智能模式）
+
+    Args:
+        charge_system_name: 收费系统名称
+        community_name: 小区名称
+    """
+    # 检查必要参数
+    if not charge_system_name:
+        print("NEED_INFO: 请提供收费系统名称")
+        print("提示：可以先使用 list_charge_systems 命令查看可用的收费系统")
+        return
+
+    if not community_name:
+        print("NEED_INFO: 请提供小区名称")
+        return
+
+    # 获取收费系统映射
+    system_map = get_user_charge_systems(return_map=True)
+    if not system_map:
+        print("获取收费系统列表失败")
+        return
+
+    # 查找收费系统 ID
+    charge_system_id = system_map.get(charge_system_name)
+    if not charge_system_id:
+        print(f"未找到收费系统：{charge_system_name}")
+        print("可用的收费系统：" + ", ".join(system_map.keys()))
+        return
+
+    # 搜索小区
+    community_map = search_community(charge_system_id, community_name, return_map=True)
+    if community_map is None:
+        print("搜索小区失败")
+        return
+
+    if not community_map:
+        print(f"未找到匹配的小区：{community_name}")
+        return
+
+    if len(community_map) == 1:
+        # 只有一个匹配，直接查询
+        comm_name, comm_id = next(iter(community_map.items()))
+        print(f"找到小区：{comm_name}")
+        get_community_current_year_arrears(str(comm_id))
+    else:
+        # 多个匹配，列出供用户选择
+        print(f"找到多个匹配的小区，请使用完整的小区名称重新查询：")
+        for name in community_map.keys():
+            print(f"  - {name}")
+
+
 def logout() -> str:
     """
     登出马克账号。
@@ -512,6 +612,14 @@ if __name__ == "__main__":
             charge_system_name = sys.argv[2]
             community_name = sys.argv[3] if len(sys.argv) > 3 else None
             get_arrears(charge_system_name, community_name)
+    elif command == "get_current_year_arrears":
+        if len(sys.argv) < 3:
+            print("错误：请提供收费系统名称和小区名称")
+            print("用法: python3 main.py get_current_year_arrears <收费系统名称> <小区名称>")
+        else:
+            charge_system_name = sys.argv[2]
+            community_name = sys.argv[3] if len(sys.argv) > 3 else None
+            get_current_year_arrears(charge_system_name, community_name)
     elif command == "_get_charge_system_map":
         # 内部命令：返回 JSON 格式的收费系统映射
         system_map = get_user_charge_systems(return_map=True)
@@ -533,6 +641,14 @@ if __name__ == "__main__":
         else:
             community_id = sys.argv[2]
             get_community_total_arrears(community_id)
+    elif command == "get_community_current_year_arrears":
+        # 通过小区ID查询本年度物业费欠费
+        if len(sys.argv) < 3:
+            print("错误：请提供小区ID参数")
+            print("用法: python3 main.py get_community_current_year_arrears <小区ID>")
+        else:
+            community_id = sys.argv[2]
+            get_community_current_year_arrears(community_id)
     else:
         print("错误：未知的指令或参数不足")
         print("可用指令:")
@@ -541,4 +657,6 @@ if __name__ == "__main__":
         print("  list_charge_systems - 列出可用的收费系统")
         print("  search_community <收费系统名称> <小区关键词> - 搜索小区")
         print("  get_arrears <收费系统名称> <小区名称> - 通过名称查询欠费")
+        print("  get_current_year_arrears <收费系统名称> <小区名称> - 通过名称查询本年度物业费欠费")
         print("  get_community_total_arrears <小区ID> - 通过ID查询欠费（旧版）")
+        print("  get_community_current_year_arrears <小区ID> - 通过ID查询本年度物业费欠费")
