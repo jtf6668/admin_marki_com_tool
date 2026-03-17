@@ -985,6 +985,244 @@ def get_today_stats(charge_system_name=None, community_name=None):
             print(f"  - {name}")
 
 
+def get_current_month_time_range():
+    """
+    获取本月的开始和结束日期字符串（YYYY-MM-DD格式）
+
+    Returns:
+        (start_date_str, end_date_str) 日期字符串元组
+    """
+    now = datetime.now()
+    # 本月开始日期：1日
+    start_of_month = datetime(now.year, now.month, 1)
+    # 本月结束日期：下一个月的第一天减去一天
+    if now.month == 12:
+        end_of_month = datetime(now.year + 1, 1, 1) - timedelta(days=1)
+    else:
+        end_of_month = datetime(now.year, now.month + 1, 1) - timedelta(days=1)
+
+    start_date_str = start_of_month.strftime("%Y-%m-%d")
+    end_date_str = end_of_month.strftime("%Y-%m-%d")
+
+    return start_date_str, end_date_str
+
+
+def get_outcome_detail_list(community_id: str, start_date_str: str, end_date_str: str) -> dict:
+    """
+    获取小区指定时间范围内的支出明细
+
+    Args:
+        community_id: 小区ID
+        start_date_str: 开始日期 (YYYY-MM-DD)
+        end_date_str: 结束日期 (YYYY-MM-DD)
+
+    Returns:
+        支出明细数据字典
+    """
+    import random
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+
+    params = {
+        "startTimeStr": start_date_str,
+        "endTimeStr": end_date_str,
+        "communityID": int(community_id),
+        "page": 1,
+        "pageSize": 1000,  # 获取足够多的记录
+        "r": random.random()
+    }
+
+    try:
+        response = requests.get(
+            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/GetOutComeDetailList",
+            params=params,
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"接口调用失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            return None
+
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get('code') != 0:
+            logger.error(f"获取支出明细失败: {data.get('msg')}")
+            return None
+
+        return data.get('data', {})
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"接口调用发生异常: {e}")
+        return None
+
+
+def format_monthly_expense_stats(community_name: str, outcome_data: dict, start_date_str: str, end_date_str) -> str:
+    """
+    格式化月度支出统计数据
+
+    Args:
+        community_name: 小区名称
+        outcome_data: 支出数据
+        start_date_str: 开始日期
+        end_date_str: 结束日期
+
+    Returns:
+        格式化后的统计文本
+    """
+    start_dt = datetime.strptime(start_date_str, "%Y-%m-%d")
+    end_dt = datetime.strptime(end_date_str, "%Y-%m-%d")
+    month_str = start_dt.strftime("%Y年%m月")
+
+    output = [f"### {community_name} {month_str} 支出统计\n"]
+
+    list_data = outcome_data.get('list', [])
+    total_count = outcome_data.get('total', 0)
+
+    # 统计总支出
+    total_expense = 0.0
+    # 按支出项目统计
+    expense_item_stats = {}
+    # 按收款人统计
+    payee_stats = {}
+    # 按操作人统计
+    operator_stats = {}
+
+    for item in list_data:
+        amount = item.get('amount', 0)
+        amount_yuan = amount / 100.0  # 分转元
+        item_name = item.get('itemName', '未知项目')
+        payee = item.get('payee', '未知收款人')
+        operator = item.get('opName', '未知操作人')
+
+        total_expense += amount_yuan
+
+        # 按支出项目统计
+        if item_name not in expense_item_stats:
+            expense_item_stats[item_name] = 0
+        expense_item_stats[item_name] += amount_yuan
+
+        # 按收款人统计
+        if payee not in payee_stats:
+            payee_stats[payee] = 0
+        payee_stats[payee] += amount_yuan
+
+        # 按操作人统计
+        if operator not in operator_stats:
+            operator_stats[operator] = 0
+        operator_stats[operator] += amount_yuan
+
+    # 基础统计
+    output.append(f"**统计时间**: {start_date_str} 至 {end_date_str}")
+    output.append(f"**总支出**: ¥{total_expense:,.2f}")
+    output.append(f"**支出笔数**: {total_count} 笔")
+    output.append("")
+
+    # 按支出项目统计
+    output.append("**各支出项目情况**:")
+    for item_name, amount in expense_item_stats.items():
+        output.append(f"  - {item_name}: ¥{amount:,.2f}")
+    output.append("")
+
+    # 按收款人统计（如果有数据）
+    if payee_stats and any(k for k in payee_stats.keys() if k != '未知收款人'):
+        output.append("**各收款人情况**:")
+        for payee_name, amount in payee_stats.items():
+            if payee_name:  # 只显示非空的收款人
+                output.append(f"  - {payee_name}: ¥{amount:,.2f}")
+        output.append("")
+
+    # 按操作人统计
+    output.append("**各操作人情况**:")
+    for operator_name, amount in operator_stats.items():
+        output.append(f"  - {operator_name}: ¥{amount:,.2f}")
+
+    return "\n".join(output)
+
+
+def get_community_monthly_expense(community_id: str, community_name: str = None) -> str:
+    """
+    获取小区本月支出统计
+
+    Args:
+        community_id: 小区ID
+        community_name: 小区名称（可选）
+
+    Returns:
+        统计结果文本
+    """
+    start_date_str, end_date_str = get_current_month_time_range()
+    outcome_data = get_outcome_detail_list(community_id, start_date_str, end_date_str)
+
+    if outcome_data is None:
+        return "获取支出明细失败"
+
+    if not community_name:
+        community_name = "该小区"
+
+    output = format_monthly_expense_stats(community_name, outcome_data, start_date_str, end_date_str)
+    logger.info(f"成功获取小区 {community_id} 的本月支出统计")
+    print(f"返回数据：{output}")
+    return output
+
+
+def get_monthly_expense(charge_system_name=None, community_name=None):
+    """
+    通过名称查询小区本月支出统计（智能模式）
+
+    Args:
+        charge_system_name: 收费系统名称
+        community_name: 小区名称
+    """
+    # 检查必要参数
+    if not charge_system_name:
+        print("NEED_INFO: 请提供收费系统名称")
+        print("提示：可以先使用 list_charge_systems 命令查看可用的收费系统")
+        return
+
+    if not community_name:
+        print("NEED_INFO: 请提供小区名称")
+        return
+
+    # 获取收费系统映射
+    system_map = get_user_charge_systems(return_map=True)
+    if not system_map:
+        print("获取收费系统列表失败")
+        return
+
+    # 查找收费系统 ID
+    charge_system_id = system_map.get(charge_system_name)
+    if not charge_system_id:
+        print(f"未找到收费系统：{charge_system_name}")
+        print("可用的收费系统：" + ", ".join(system_map.keys()))
+        return
+
+    # 搜索小区
+    community_map = search_community(charge_system_id, community_name, return_map=True)
+    if community_map is None:
+        print("搜索小区失败")
+        return
+
+    if not community_map:
+        print(f"未找到匹配的小区：{community_name}")
+        return
+
+    if len(community_map) == 1:
+        # 只有一个匹配，直接查询
+        comm_name, comm_id = next(iter(community_map.items()))
+        print(f"找到小区：{comm_name}")
+        get_community_monthly_expense(str(comm_id), comm_name)
+    else:
+        # 多个匹配，列出供用户选择
+        print(f"找到多个匹配的小区，请使用完整的小区名称重新查询：")
+        for name in community_map.keys():
+            print(f"  - {name}")
+
+
 def logout() -> str:
     """
     登出马克账号。
@@ -1100,6 +1338,23 @@ if __name__ == "__main__":
         else:
             community_id = sys.argv[2]
             get_community_today_stats(community_id)
+    elif command == "get_monthly_expense":
+        # 查询小区本月支出统计
+        if len(sys.argv) < 4:
+            print("错误：请提供收费系统名称和小区名称")
+            print("用法: python3 main.py get_monthly_expense <收费系统名称> <小区名称>")
+        else:
+            charge_system_name = sys.argv[2]
+            community_name = sys.argv[3]
+            get_monthly_expense(charge_system_name, community_name)
+    elif command == "get_community_monthly_expense":
+        # 通过小区ID查询本月支出统计
+        if len(sys.argv) < 3:
+            print("错误：请提供小区ID参数")
+            print("用法: python3 main.py get_community_monthly_expense <小区ID>")
+        else:
+            community_id = sys.argv[2]
+            get_community_monthly_expense(community_id)
     else:
         print("错误：未知的指令或参数不足")
         print("可用指令:")
@@ -1111,6 +1366,8 @@ if __name__ == "__main__":
         print("  get_current_year_arrears <收费系统名称> <小区名称> - 通过名称查询本年度物业费欠费")
         print("  get_custom_range_arrears <收费系统名称> <小区名称> <开始日期> <结束日期> - 自定义时间范围查询欠费")
         print("  get_today_stats <收费系统名称> <小区名称> - 查询小区今日收入统计")
+        print("  get_monthly_expense <收费系统名称> <小区名称> - 查询小区本月支出统计")
         print("  get_community_total_arrears <小区ID> - 通过ID查询欠费（旧版）")
         print("  get_community_current_year_arrears <小区ID> - 通过ID查询本年度物业费欠费")
         print("  get_community_today_stats <小区ID> - 通过ID查询今日收入统计")
+        print("  get_community_monthly_expense <小区ID> - 通过ID查询本月支出统计")
