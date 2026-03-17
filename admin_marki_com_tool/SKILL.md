@@ -1,6 +1,6 @@
 ---
 name: admin_marki_com_tool
-description: 用于查询马克智慧物业系统数据的工具。可以查看加入的团队列表、登出账号，查询欠费总额、本年度物业费欠费、自定义时间范围的欠费，查询今日收入统计（总收入、现金收入、预存款充值、押金收取、缴费笔数、各收费项/支付方式/收款员的收入情况），查询本月小区总支出，查询本月小区房屋收缴率，查询截至当前小区欠费总户数，以及查询房屋/楼栋/单元的欠费总额。当用户提到马克物业、小区欠费、收费项目、团队列表、本年度物业费、自定义时间欠费、今日收入、缴费统计、本月支出、小区支出、收缴率、房屋收缴率、欠费户数、欠费总户数、楼栋欠费、单元欠费、房屋欠费等相关内容时，记得使用这个工具。
+description: 用于查询马克智慧物业系统数据的工具。可以查看加入的团队列表、登出账号，查询欠费总额、本年度物业费欠费、自定义时间范围的欠费，查询今日收入统计（总收入、现金收入、预存款充值、押金收取、缴费笔数、各收费项/支付方式/收款员的收入情况），查询本月小区总支出，查询本月小区房屋收缴率，查询截至当前小区欠费总户数，查询房屋/楼栋/单元的欠费总额，以及查询当前登录用户信息。当用户提到马克物业、小区欠费、收费项目、团队列表、本年度物业费、自定义时间欠费、今日收入、缴费统计、本月支出、小区支出、收缴率、房屋收缴率、欠费户数、欠费总户数、楼栋欠费、单元欠费、房屋欠费、当前用户信息、登录用户信息等相关内容时，记得使用这个工具。
 requires:
   bins:
     - python3           # 确保系统安装了 python3
@@ -38,12 +38,14 @@ AI 应当根据需求选择以下指令运行：
 - **查询小区本月收缴率统计**: `python3 {baseDir}/scripts/main.py get_collection_rate <收费系统名称> <小区名称>`
 - **查询小区欠费户数统计**: `python3 {baseDir}/scripts/main.py get_arrear_households <收费系统名称> <小区名称>`
 - **查询房屋/楼栋/单元欠费总额**: `python3 {baseDir}/scripts/main.py get_household_arrears <收费系统名称> <小区名称> <关键词>`
+- **查询当前登录用户信息**: `python3 {baseDir}/scripts/main.py get_current_user_info <收费系统名称> <小区名称>`
 - **通过小区ID查询欠费总额（旧版）**: `python3 {baseDir}/scripts/main.py get_community_total_arrears <小区ID>`
 - **通过小区ID查询本年度物业费欠费**: `python3 {baseDir}/scripts/main.py get_community_current_year_arrears <小区ID>`
 - **通过小区ID查询今日收入统计**: `python3 {baseDir}/scripts/main.py get_community_today_stats <小区ID>`
 - **通过小区ID查询本月支出统计**: `python3 {baseDir}/scripts/main.py get_community_monthly_expense <小区ID>`
 - **通过小区ID查询本月收缴率统计**: `python3 {baseDir}/scripts/main.py get_community_collection_rate <小区ID> <收费系统ID>`
 - **通过小区ID查询欠费户数统计**: `python3 {baseDir}/scripts/main.py get_community_arrear_households <小区ID>`
+- **通过小区ID和收费系统ID查询初始化信息**: `python3 {baseDir}/scripts/main.py get_community_cs_init_info <小区ID> <收费系统ID>`
 
 ### 自定义时间范围查询说明
 
@@ -209,6 +211,21 @@ AI 应当根据需求选择以下指令运行：
 - 模糊匹配会自动找出所有名称包含关键词的楼栋/单元/房屋
 - 如果多个匹配项有层级关系（如同时匹配到"1栋"和"1栋A座"），会自动选择最高层级的"1栋"
 - 如果多个匹配项之间没有层级关系（如同时匹配到"1栋"和"2栋"），会列出供用户选择
+
+---
+
+### 情况 12：用户查询当前登录用户信息
+
+**用户示例**：
+- "查询当前登录用户信息"
+- "我是谁"
+- "查看我的用户信息"
+
+**处理步骤**：
+1. 只要用户询问关于当前登录用户的信息，都直接调用 `get_current_user_info` 命令获取完整的用户信息
+2. 如果信息完整（收费系统名称、小区名称都有），直接调用 `get_current_user_info <收费系统名称> <小区名称>`
+3. 如果信息不完整，按照前面的情况逐步询问用户缺失的信息
+4. 展示完整的用户信息、小区信息和收费系统信息给用户
 
 ---
 

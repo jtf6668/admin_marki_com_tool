@@ -1989,6 +1989,169 @@ def get_household_arrears_by_name(charge_system_name=None, community_name=None, 
             print(f"{idx}. {node['name']} ({level_label})")
 
 
+def format_cs_init_info(raw_response) -> str:
+    """
+    格式化初始化信息数据
+
+    Args:
+        raw_response: API 返回的原始数据
+
+    Returns:
+        格式化后的统计文本
+    """
+    if isinstance(raw_response, str):
+        res = json.loads(raw_response)
+    else:
+        res = raw_response
+
+    if res.get('code') != 0:
+        return f"获取失败：{res.get('msg')}"
+
+    data = res.get('data', {})
+    community_info = data.get('communityInfo', {})
+    cs_info = data.get('csInfo', {})
+    user_info_data = data.get('userInfo', {}).get('data', {})
+
+    output = ["### 当前登录用户信息\n"]
+
+    # 用户信息
+    output.append("**用户信息**:")
+    if user_info_data:
+        output.append(f"- 昵称: {user_info_data.get('nick', '')}")
+        output.append(f"- 真实姓名: {user_info_data.get('real_nick', '')}")
+        output.append(f"- 手机号: {user_info_data.get('phone', '')}")
+        output.append(f"- UID: {user_info_data.get('uid', '')}")
+    output.append("")
+
+    # 小区信息
+    output.append("**小区信息**:")
+    if community_info:
+        output.append(f"- 小区名称: {community_info.get('name', '')}")
+        output.append(f"- 小区ID: {community_info.get('id', '')}")
+        output.append(f"- 地址: {community_info.get('address', '')}")
+        output.append(f"- 省份: {community_info.get('province', '')}")
+        output.append(f"- 城市: {community_info.get('city', '')}")
+    output.append("")
+
+    # 收费系统信息
+    output.append("**收费系统信息**:")
+    if cs_info:
+        output.append(f"- 系统名称: {cs_info.get('name', '')}")
+        output.append(f"- 系统ID: {cs_info.get('id', '')}")
+        output.append(f"- 创建者: {cs_info.get('createUserName', '')}")
+        output.append(f"- 绑定团队: {cs_info.get('bindItemName', '')}")
+        output.append(f"- 是否收费系统管理员: {'是' if cs_info.get('isCsAdmin') else '否'}")
+
+    return "\n".join(output)
+
+
+def get_community_cs_init_info(community_id: str, cs_id: str, community_name: str = None) -> str:
+    """
+    获取小区初始化信息（包含当前登录用户信息）
+
+    Args:
+        community_id: 小区ID
+        cs_id: 收费系统ID
+        community_name: 小区名称（可选）
+
+    Returns:
+        统计结果文本
+    """
+    import random
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
+
+    params = {
+        "communityID": int(community_id),
+        "csID": int(cs_id),
+        "r": random.random()
+    }
+
+    try:
+        response = requests.get(
+            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/getCsInitInfo",
+            params=params,
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"接口调用失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            return "请求异常，请稍后再试。"
+
+        if not community_name:
+            community_name = "该小区"
+
+        output = format_cs_init_info(response.json())
+        logger.info(f"成功获取小区 {community_id} 的初始化信息")
+        return output
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"接口调用发生异常: {e}")
+        return f"接口调用发生异常: {str(e)}"
+
+
+def get_current_user_info(charge_system_name=None, community_name=None):
+    """
+    通过名称查询当前登录用户信息（智能模式）
+
+    Args:
+        charge_system_name: 收费系统名称
+        community_name: 小区名称
+    """
+    # 检查必要参数
+    if not charge_system_name:
+        print("NEED_INFO: 请提供收费系统名称")
+        print("提示：可以先使用 list_charge_systems 命令查看可用的收费系统")
+        return
+
+    if not community_name:
+        print("NEED_INFO: 请提供小区名称")
+        return
+
+    # 获取收费系统映射
+    system_map = get_user_charge_systems(return_map=True)
+    if not system_map:
+        print("获取收费系统列表失败")
+        return
+
+    # 查找收费系统 ID
+    charge_system_id = system_map.get(charge_system_name)
+    if not charge_system_id:
+        print(f"未找到收费系统：{charge_system_name}")
+        print("可用的收费系统：" + ", ".join(system_map.keys()))
+        return
+
+    # 搜索小区
+    community_map = search_community(charge_system_id, community_name, return_map=True)
+    if community_map is None:
+        print("搜索小区失败")
+        return
+
+    if not community_map:
+        print(f"未找到匹配的小区：{community_name}")
+        return
+
+    if len(community_map) > 1:
+        # 多个匹配，列出供用户选择
+        print(f"找到多个匹配的小区，请使用完整的小区名称重新查询：")
+        for name in community_map.keys():
+            print(f"  - {name}")
+        return
+
+    # 只有一个匹配，继续处理
+    comm_name, comm_id = next(iter(community_map.items()))
+    print(f"找到小区：{comm_name}")
+
+    # 获取初始化信息
+    result = get_community_cs_init_info(str(comm_id), str(charge_system_id), comm_name)
+    if result:
+        print(result)
+
+
 def logout() -> str:
     """
     登出马克账号。
@@ -2166,6 +2329,26 @@ if __name__ == "__main__":
             community_name = sys.argv[3]
             keyword = sys.argv[4]
             get_household_arrears_by_name(charge_system_name, community_name, keyword)
+    elif command == "get_current_user_info":
+        # 查询当前登录用户信息
+        if len(sys.argv) < 4:
+            print("错误：请提供收费系统名称和小区名称")
+            print("用法: python3 main.py get_current_user_info <收费系统名称> <小区名称>")
+        else:
+            charge_system_name = sys.argv[2]
+            community_name = sys.argv[3]
+            get_current_user_info(charge_system_name, community_name)
+    elif command == "get_community_cs_init_info":
+        # 通过小区ID和收费系统ID查询初始化信息
+        if len(sys.argv) < 4:
+            print("错误：请提供小区ID和收费系统ID参数")
+            print("用法: python3 main.py get_community_cs_init_info <小区ID> <收费系统ID>")
+        else:
+            community_id = sys.argv[2]
+            cs_id = sys.argv[3]
+            result = get_community_cs_init_info(community_id, cs_id)
+            if result:
+                print(result)
     else:
         print("错误：未知的指令或参数不足")
         print("可用指令:")
@@ -2181,9 +2364,11 @@ if __name__ == "__main__":
         print("  get_collection_rate <收费系统名称> <小区名称> - 查询小区本月收缴率统计")
         print("  get_arrear_households <收费系统名称> <小区名称> - 查询小区欠费户数统计")
         print("  get_household_arrears <收费系统名称> <小区名称> <关键词> - 查询房屋/楼栋/单元欠费")
+        print("  get_current_user_info <收费系统名称> <小区名称> - 查询当前登录用户信息")
         print("  get_community_total_arrears <小区ID> - 通过ID查询欠费（旧版）")
         print("  get_community_current_year_arrears <小区ID> - 通过ID查询本年度物业费欠费")
         print("  get_community_today_stats <小区ID> - 通过ID查询今日收入统计")
         print("  get_community_monthly_expense <小区ID> - 通过ID查询本月支出统计")
         print("  get_community_collection_rate <小区ID> <收费系统ID> - 通过ID查询本月收缴率统计")
         print("  get_community_arrear_households <小区ID> - 通过ID查询欠费户数统计")
+        print("  get_community_cs_init_info <小区ID> <收费系统ID> - 通过ID查询初始化信息")
