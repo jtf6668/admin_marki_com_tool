@@ -1594,6 +1594,401 @@ def get_arrear_households(charge_system_name=None, community_name=None):
             print(f"  - {name}")
 
 
+def search_household_structure(community_id: str, keyword: str) -> dict:
+    """
+    调用 getCommunityInfo 接口，模糊搜索楼宇/单元/房屋
+
+    Args:
+        community_id: 小区ID
+        keyword: 搜索关键词
+
+    Returns:
+        嵌套的楼宇/单元/房屋结构数据
+    """
+    import random
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+
+    params = {
+        "communityID": community_id,
+        "kw": keyword,
+        "needHouse": 1,
+        "r": random.random()
+    }
+
+    try:
+        response = requests.get(
+            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/getCommunityInfo",
+            params=params,
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"接口调用失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            return None
+
+        data = response.json()
+
+        if data.get('code') != 0:
+            logger.error(f"获取房屋结构失败: {data.get('msg')}")
+            return None
+
+        return data.get('data', {})
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"接口调用发生异常: {e}")
+        return None
+
+
+def split_keywords(keyword: str) -> list:
+    """
+    将用户输入拆分成多个关键词
+
+    Args:
+        keyword: 用户输入的关键词，如"2栋202"
+
+    Returns:
+        关键词列表，如["2栋", "202"]
+    """
+    import re
+    # 移除空格
+    keyword = keyword.strip()
+    if not keyword:
+        return []
+
+    # 尝试按常见分隔符拆分
+    separators = ['/', '\\', '-', ' ', '、', '，', ',']
+    for sep in separators:
+        if sep in keyword:
+            parts = [p.strip() for p in keyword.split(sep) if p.strip()]
+            if parts:
+                return parts
+
+    # 对于没有分隔符的情况，尝试智能拆分
+    # 例如"2栋202" -> ["2栋", "202"]
+    parts = []
+    i = 0
+    n = len(keyword)
+
+    while i < n:
+        # 查找数字
+        if keyword[i].isdigit():
+            j = i
+            while j < n and keyword[j].isdigit():
+                j += 1
+            # 数字后面可能跟着单位词（栋、单元、室等）
+            while j < n and '\u4e00' <= keyword[j] <= '\u9fff':
+                j += 1
+            parts.append(keyword[i:j])
+            i = j
+        # 查找中文字符
+        elif '\u4e00' <= keyword[i] <= '\u9fff':
+            j = i
+            while j < n and '\u4e00' <= keyword[j] <= '\u9fff':
+                j += 1
+            parts.append(keyword[i:j])
+            i = j
+        else:
+            i += 1
+
+    # 如果拆分失败，返回原关键词
+    return parts if parts else [keyword]
+
+
+def find_matching_nodes(community_data: dict, keyword: str) -> list:
+    """
+    从嵌套结构中找出所有匹配的节点，并按层级关系筛选
+
+    Args:
+        community_data: getCommunityInfo 返回的数据
+        keyword: 用户输入的关键词
+
+    Returns:
+        筛选后的节点列表，每个节点包含 id, name, level, path
+        level: 'building' | 'unit' | 'house'
+        path: 节点的完整路径，用于判断层级关系
+    """
+    if not community_data:
+        return []
+
+    building_list = community_data.get('buildingList', [])
+    if not building_list:
+        return []
+
+    # 拆分关键词
+    keywords = split_keywords(keyword)
+    if not keywords:
+        return []
+
+    # 所有关键词都转为小写用于匹配
+    keywords_lower = [k.lower() for k in keywords]
+
+    all_nodes = []
+
+    # 遍历所有节点，收集匹配的（不依赖API的搜索结果，完全在本地匹配）
+    for building in building_list:
+        building_name = building.get('name', '')
+        building_id = building.get('id')
+        building_path = [building_id]
+        full_building_name = building_name
+
+        # 检查楼宇是否匹配：所有关键词都要出现在完整路径中
+        node_full_text = full_building_name.lower()
+        node_matches = all(k in node_full_text for k in keywords_lower)
+
+        if node_matches:
+            all_nodes.append({
+                'id': building_id,
+                'name': building_name,
+                'full_name': full_building_name,
+                'level': 'building',
+                'id_type': 2,
+                'path': building_path.copy()
+            })
+
+        unit_list = building.get('unitList', [])
+        for unit in unit_list:
+            unit_name = unit.get('name', '')
+            unit_id = unit.get('id')
+            unit_path = building_path + [unit_id]
+            full_unit_name = f"{building_name}/{unit_name}"
+
+            # 检查单元是否匹配
+            node_full_text = full_unit_name.lower()
+            node_matches = all(k in node_full_text for k in keywords_lower)
+
+            if node_matches:
+                all_nodes.append({
+                    'id': unit_id,
+                    'name': f"{building_name}/{unit_name}",
+                    'full_name': full_unit_name,
+                    'level': 'unit',
+                    'id_type': 3,
+                    'path': unit_path.copy()
+                })
+
+            house_list = unit.get('houseList', [])
+            for house in house_list:
+                house_name = house.get('name', '')
+                house_id = house.get('id')
+                house_path = unit_path + [house_id]
+                full_house_name = f"{building_name}/{unit_name}/{house_name}"
+
+                # 检查房屋是否匹配
+                node_full_text = full_house_name.lower()
+                node_matches = all(k in node_full_text for k in keywords_lower)
+
+                if node_matches:
+                    all_nodes.append({
+                        'id': house_id,
+                        'name': f"{building_name}/{unit_name}/{house_name}",
+                        'full_name': full_house_name,
+                        'level': 'house',
+                        'id_type': 4,
+                        'path': house_path.copy()
+                    })
+
+    if not all_nodes:
+        return []
+
+    # 筛选最高层级的节点：如果一个节点的祖先也在匹配列表中，则只保留祖先
+    # 构建 id 到节点的映射
+    id_to_node = {node['id']: node for node in all_nodes}
+    selected_nodes = []
+
+    for node in all_nodes:
+        # 检查该节点的祖先是否也在匹配列表中
+        has_ancestor_in_list = False
+        # path 包含从根到该节点的所有 id，最后一个是自己，所以检查前面的
+        for ancestor_id in node['path'][:-1]:
+            if ancestor_id in id_to_node:
+                has_ancestor_in_list = True
+                break
+        if not has_ancestor_in_list:
+            selected_nodes.append(node)
+
+    return selected_nodes
+
+
+def format_household_arrears_result(raw_response, node_name: str, community_name: str = None) -> str:
+    """
+    格式化房屋欠费查询结果
+
+    Args:
+        raw_response: API 返回的原始数据
+        node_name: 查询的节点名称
+        community_name: 小区名称（可选）
+
+    Returns:
+        格式化后的欠费信息文本
+    """
+    if isinstance(raw_response, str):
+        res = json.loads(raw_response)
+    else:
+        res = raw_response
+
+    if res.get('code') != 0:
+        return f"获取失败：{res.get('msg')}"
+
+    data = res.get('data', {})
+    total_arrears = data.get('totalArrearsAmount', 0)
+    total_arrears_yuan = total_arrears / 100.0
+
+    output = ["### 房屋欠费统计\n"]
+    if community_name:
+        output.append(f"**小区名称**: {community_name}")
+    output.append(f"**查询对象**: {node_name}")
+    output.append(f"**欠费总额**: ¥{total_arrears_yuan:,.2f}")
+
+    return "\n".join(output)
+
+
+def get_household_arrears(community_id: str, object_id: str, id_type: int, node_name: str, community_name: str = None) -> str:
+    """
+    查询指定对象的欠费总额
+
+    Args:
+        community_id: 小区ID
+        object_id: 楼宇/单元/房屋ID
+        id_type: 2=楼宇, 3=单元, 4=房屋
+        node_name: 节点名称，用于展示
+        community_name: 小区名称（可选）
+
+    Returns:
+        格式化的欠费信息
+    """
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+
+    params = {
+        "id": object_id,
+        "idType": id_type,
+        "assetType": 1,
+        "page": 1,
+        "pageSize": 20
+    }
+
+    try:
+        response = requests.get(
+            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/getArrearsHouseList",
+            params=params,
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"接口调用失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            return "请求异常，请稍后再试。"
+
+        response.raise_for_status()
+        data = response.json()
+
+        output = format_household_arrears_result(data, node_name, community_name)
+        logger.info(f"成功获取 {community_id} 中 {node_name} 的欠费信息")
+        print(f"返回数据：{output}")
+        return output
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"接口调用发生异常: {e}")
+        return f"接口调用发生异常: {str(e)}"
+
+
+def get_household_arrears_by_name(charge_system_name=None, community_name=None, keyword=None):
+    """
+    通过名称查询房屋相关欠费（智能模式）
+
+    Args:
+        charge_system_name: 收费系统名称
+        community_name: 小区名称
+        keyword: 搜索关键词（楼栋/单元/房屋）
+    """
+    # 检查必要参数
+    if not charge_system_name:
+        print("NEED_INFO: 请提供收费系统名称")
+        print("提示：可以先使用 list_charge_systems 命令查看可用的收费系统")
+        return
+
+    if not community_name:
+        print("NEED_INFO: 请提供小区名称")
+        return
+
+    if not keyword:
+        print("NEED_INFO: 请提供搜索关键词（楼栋/单元/房屋名称）")
+        return
+
+    # 获取收费系统映射
+    system_map = get_user_charge_systems(return_map=True)
+    if not system_map:
+        print("获取收费系统列表失败")
+        return
+
+    # 查找收费系统 ID
+    charge_system_id = system_map.get(charge_system_name)
+    if not charge_system_id:
+        print(f"未找到收费系统：{charge_system_name}")
+        print("可用的收费系统：" + ", ".join(system_map.keys()))
+        return
+
+    # 搜索小区
+    community_map = search_community(charge_system_id, community_name, return_map=True)
+    if community_map is None:
+        print("搜索小区失败")
+        return
+
+    if not community_map:
+        print(f"未找到匹配的小区：{community_name}")
+        return
+
+    if len(community_map) > 1:
+        # 多个匹配，列出供用户选择
+        print(f"找到多个匹配的小区，请使用完整的小区名称重新查询：")
+        for name in community_map.keys():
+            print(f"  - {name}")
+        return
+
+    # 只有一个匹配，继续处理
+    comm_name, comm_id = next(iter(community_map.items()))
+    print(f"找到小区：{comm_name}")
+
+    # 拆分关键词
+    keywords = split_keywords(keyword)
+    # 先用最后一个（最具体的）关键词搜索，获取包含完整路径的节点
+    search_kw = keywords[-1] if keywords else keyword
+    household_data = search_household_structure(str(comm_id), search_kw)
+
+    if household_data is None:
+        print("搜索房屋结构失败")
+        return
+
+    # 找出匹配的节点（使用原始关键词进行多关键词匹配）
+    matching_nodes = find_matching_nodes(household_data, keyword)
+    if not matching_nodes:
+        print(f"未找到与'{keyword}'匹配的楼栋/单元/房屋，请确认输入是否正确")
+        return
+
+    if len(matching_nodes) == 1:
+        # 只有一个匹配，直接查询欠费
+        node = matching_nodes[0]
+        get_household_arrears(str(comm_id), node['id'], node['id_type'], node['name'], comm_name)
+    else:
+        # 多个匹配，列出供用户选择
+        print("MULTI_MATCH:")
+        for idx, node in enumerate(matching_nodes, 1):
+            level_label = {
+                'building': '楼栋',
+                'unit': '单元',
+                'house': '房屋'
+            }.get(node['level'], '未知')
+            print(f"{idx}. {node['name']} ({level_label})")
+
+
 def logout() -> str:
     """
     登出马克账号。
@@ -1761,6 +2156,16 @@ if __name__ == "__main__":
         else:
             community_id = sys.argv[2]
             get_community_arrear_households(community_id)
+    elif command == "get_household_arrears":
+        # 查询房屋/楼栋/单元欠费
+        if len(sys.argv) < 5:
+            print("错误：请提供收费系统名称、小区名称和搜索关键词")
+            print("用法: python3 main.py get_household_arrears <收费系统名称> <小区名称> <关键词>")
+        else:
+            charge_system_name = sys.argv[2]
+            community_name = sys.argv[3]
+            keyword = sys.argv[4]
+            get_household_arrears_by_name(charge_system_name, community_name, keyword)
     else:
         print("错误：未知的指令或参数不足")
         print("可用指令:")
@@ -1775,6 +2180,7 @@ if __name__ == "__main__":
         print("  get_monthly_expense <收费系统名称> <小区名称> - 查询小区本月支出统计")
         print("  get_collection_rate <收费系统名称> <小区名称> - 查询小区本月收缴率统计")
         print("  get_arrear_households <收费系统名称> <小区名称> - 查询小区欠费户数统计")
+        print("  get_household_arrears <收费系统名称> <小区名称> <关键词> - 查询房屋/楼栋/单元欠费")
         print("  get_community_total_arrears <小区ID> - 通过ID查询欠费（旧版）")
         print("  get_community_current_year_arrears <小区ID> - 通过ID查询本年度物业费欠费")
         print("  get_community_today_stats <小区ID> - 通过ID查询今日收入统计")
