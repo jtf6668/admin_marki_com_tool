@@ -1,6 +1,6 @@
 ---
 name: admin_marki_com_tool
-description: 用于查询马克智慧物业系统数据的工具。可以查看加入的团队列表、登出账号，查询欠费总额、本年度物业费欠费、自定义时间范围的欠费，查询今日收入统计（总收入、现金收入、预存款充值、押金收取、缴费笔数、各收费项/支付方式/收款员的收入情况），以及查询本月小区总支出。当用户提到马克物业、小区欠费、收费项目、团队列表、本年度物业费、自定义时间欠费、今日收入、缴费统计、本月支出、小区支出等相关内容时，记得使用这个工具。
+description: 用于查询马克智慧物业系统数据的工具。可以查看加入的团队列表、登出账号，查询欠费总额、本年度物业费欠费、自定义时间范围的欠费，查询今日收入统计（总收入、现金收入、预存款充值、押金收取、缴费笔数、各收费项/支付方式/收款员的收入情况），查询本月小区总支出，以及查询本月小区房屋收缴率。当用户提到马克物业、小区欠费、收费项目、团队列表、本年度物业费、自定义时间欠费、今日收入、缴费统计、本月支出、小区支出、收缴率、房屋收缴率等相关内容时，记得使用这个工具。
 requires:
   bins:
     - python3           # 确保系统安装了 python3
@@ -35,10 +35,12 @@ AI 应当根据需求选择以下指令运行：
 - **通过名称查询自定义时间范围欠费**: `python3 {baseDir}/scripts/main.py get_custom_range_arrears <收费系统名称> <小区名称> <开始日期> <结束日期>`
 - **查询小区今日收入统计**: `python3 {baseDir}/scripts/main.py get_today_stats <收费系统名称> <小区名称>`
 - **查询小区本月支出统计**: `python3 {baseDir}/scripts/main.py get_monthly_expense <收费系统名称> <小区名称>`
+- **查询小区本月收缴率统计**: `python3 {baseDir}/scripts/main.py get_collection_rate <收费系统名称> <小区名称>`
 - **通过小区ID查询欠费总额（旧版）**: `python3 {baseDir}/scripts/main.py get_community_total_arrears <小区ID>`
 - **通过小区ID查询本年度物业费欠费**: `python3 {baseDir}/scripts/main.py get_community_current_year_arrears <小区ID>`
 - **通过小区ID查询今日收入统计**: `python3 {baseDir}/scripts/main.py get_community_today_stats <小区ID>`
 - **通过小区ID查询本月支出统计**: `python3 {baseDir}/scripts/main.py get_community_monthly_expense <小区ID>`
+- **通过小区ID查询本月收缴率统计**: `python3 {baseDir}/scripts/main.py get_community_collection_rate <小区ID> <收费系统ID>`
 
 ### 自定义时间范围查询说明
 
@@ -153,6 +155,20 @@ AI 应当根据需求选择以下指令运行：
 **处理步骤**：
 1. 只要用户询问关于"本月"、"这个月"的任何支出相关统计，都直接调用 `get_monthly_expense` 命令获取完整的本月支出统计
 2. 如果信息完整（收费系统名称、小区名称都有），直接调用 `get_monthly_expense <收费系统名称> <小区名称>`
+3. 如果信息不完整，按照前面的情况逐步询问用户缺失的信息
+4. 展示完整的统计结果给用户（结果中包含用户需要的所有信息）
+
+---
+
+### 情况 9：用户查询本月收缴率统计
+**用户示例**：
+- "本月小区房屋收缴率是多少？"
+- "这个月小区物业费收缴率是多少？"
+- "本月小区有多少户已经缴清费用？"
+
+**处理步骤**：
+1. 只要用户询问关于"本月"、"这个月"的任何收缴率相关统计，都直接调用 `get_collection_rate` 命令获取完整的本月收缴率统计
+2. 如果信息完整（收费系统名称、小区名称都有），直接调用 `get_collection_rate <收费系统名称> <小区名称>`
 3. 如果信息不完整，按照前面的情况逐步询问用户缺失的信息
 4. 展示完整的统计结果给用户（结果中包含用户需要的所有信息）
 

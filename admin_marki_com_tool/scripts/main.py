@@ -1223,6 +1223,205 @@ def get_monthly_expense(charge_system_name=None, community_name=None):
             print(f"  - {name}")
 
 
+def get_current_month_year_range():
+    """
+    获取当前月的年和月（YYYY-MM格式）
+
+    Returns:
+        (year_month_str) 日期字符串
+    """
+    now = datetime.now()
+    return now.strftime("%Y-%m")
+
+
+def get_ledger_list_v2(community_id: str, cs_id: str, year_month: str) -> dict:
+    """
+    获取小区指定月份的台账信息
+
+    Args:
+        community_id: 小区ID
+        cs_id: 收费系统ID
+        year_month: 年月 (YYYY-MM格式)
+
+    Returns:
+        台账数据字典
+    """
+    import random
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+
+    payload = {
+        "type": "1",
+        "startTime": year_month,
+        "endTime": year_month,
+        "current": 1,
+        "__r__": random.random(),
+        "communityIdList": [int(community_id)],
+        "version": 3,
+        "opAssetType": 1,
+        "csId": int(cs_id),
+        "mergeChargeItem": False,
+        "page": 1,
+        "pageSize": 1000
+    }
+
+    try:
+        response = requests.post(
+            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/getLedgerListV2",
+            json=payload,
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"接口调用失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            return None
+
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get('code') != 0:
+            logger.error(f"获取台账信息失败: {data.get('msg')}")
+            return None
+
+        return data.get('data', {})
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"接口调用发生异常: {e}")
+        return None
+
+
+def format_collection_rate_stats(community_name: str, ledger_data: dict, year_month: str) -> str:
+    """
+    格式化收缴率统计数据
+
+    Args:
+        community_name: 小区名称
+        ledger_data: 台账数据
+        year_month: 年月 (YYYY-MM格式)
+
+    Returns:
+        格式化后的统计文本
+    """
+    year_month_dt = datetime.strptime(year_month, "%Y-%m")
+    month_str = year_month_dt.strftime("%Y年%m月")
+
+    output = [f"### {community_name} {month_str} 房屋收缴率统计\n"]
+
+    # 从数据中提取统计信息
+    total_property = ledger_data.get('totalProperty', 0)  # 总房屋数
+    total_amount = ledger_data.get('totalAmount', 0) / 100.0  # 总金额（分转元）
+    total_paid_amount = ledger_data.get('totalPaidAmount', 0) / 100.0  # 已缴金额
+    total_no_paid_amount = ledger_data.get('totalNoPaidAmount', 0) / 100.0  # 未缴金额
+    paid_rate = ledger_data.get('paidRate', '0.00%')  # 收缴率
+    total_paid_clear_property = ledger_data.get('totalPaidClearProperty', 0)  # 已缴清房屋数
+
+    # 解析 index 字段获取更多信息
+    index_str = ledger_data.get('index', '{}')
+    try:
+        index_data = json.loads(index_str)
+        not_paid_house_num = index_data.get('notPaidHouseNum', 0)
+    except (json.JSONDecodeError, KeyError):
+        not_paid_house_num = 0
+
+    # 基础统计
+    output.append(f"**统计时间**: {month_str}")
+    output.append(f"**收缴率**: {paid_rate}")
+    output.append("")
+    output.append(f"**总房屋数**: {total_property} 户")
+    output.append(f"**已缴清房屋数**: {total_paid_clear_property} 户")
+    output.append(f"**未缴清房屋数**: {not_paid_house_num if not_paid_house_num else (total_property - total_paid_clear_property)} 户")
+    output.append("")
+    output.append(f"**总应收金额**: ¥{total_amount:,.2f}")
+    output.append(f"**已缴金额**: ¥{total_paid_amount:,.2f}")
+    output.append(f"**未缴金额**: ¥{total_no_paid_amount:,.2f}")
+
+    return "\n".join(output)
+
+
+def get_community_collection_rate(community_id: str, cs_id: str, community_name: str = None) -> str:
+    """
+    获取小区本月收缴率统计
+
+    Args:
+        community_id: 小区ID
+        cs_id: 收费系统ID
+        community_name: 小区名称（可选）
+
+    Returns:
+        统计结果文本
+    """
+    year_month = get_current_month_year_range()
+    ledger_data = get_ledger_list_v2(community_id, cs_id, year_month)
+
+    if ledger_data is None:
+        return "获取台账信息失败"
+
+    if not community_name:
+        community_name = "该小区"
+
+    output = format_collection_rate_stats(community_name, ledger_data, year_month)
+    logger.info(f"成功获取小区 {community_id} 的本月收缴率统计")
+    print(f"返回数据：{output}")
+    return output
+
+
+def get_collection_rate(charge_system_name=None, community_name=None):
+    """
+    通过名称查询小区本月收缴率统计（智能模式）
+
+    Args:
+        charge_system_name: 收费系统名称
+        community_name: 小区名称
+    """
+    # 检查必要参数
+    if not charge_system_name:
+        print("NEED_INFO: 请提供收费系统名称")
+        print("提示：可以先使用 list_charge_systems 命令查看可用的收费系统")
+        return
+
+    if not community_name:
+        print("NEED_INFO: 请提供小区名称")
+        return
+
+    # 获取收费系统映射
+    system_map = get_user_charge_systems(return_map=True)
+    if not system_map:
+        print("获取收费系统列表失败")
+        return
+
+    # 查找收费系统 ID
+    charge_system_id = system_map.get(charge_system_name)
+    if not charge_system_id:
+        print(f"未找到收费系统：{charge_system_name}")
+        print("可用的收费系统：" + ", ".join(system_map.keys()))
+        return
+
+    # 搜索小区
+    community_map = search_community(charge_system_id, community_name, return_map=True)
+    if community_map is None:
+        print("搜索小区失败")
+        return
+
+    if not community_map:
+        print(f"未找到匹配的小区：{community_name}")
+        return
+
+    if len(community_map) == 1:
+        # 只有一个匹配，直接查询
+        comm_name, comm_id = next(iter(community_map.items()))
+        print(f"找到小区：{comm_name}")
+        get_community_collection_rate(str(comm_id), str(charge_system_id), comm_name)
+    else:
+        # 多个匹配，列出供用户选择
+        print(f"找到多个匹配的小区，请使用完整的小区名称重新查询：")
+        for name in community_map.keys():
+            print(f"  - {name}")
+
+
 def logout() -> str:
     """
     登出马克账号。
@@ -1355,6 +1554,24 @@ if __name__ == "__main__":
         else:
             community_id = sys.argv[2]
             get_community_monthly_expense(community_id)
+    elif command == "get_collection_rate":
+        # 查询小区本月收缴率统计
+        if len(sys.argv) < 4:
+            print("错误：请提供收费系统名称和小区名称")
+            print("用法: python3 main.py get_collection_rate <收费系统名称> <小区名称>")
+        else:
+            charge_system_name = sys.argv[2]
+            community_name = sys.argv[3]
+            get_collection_rate(charge_system_name, community_name)
+    elif command == "get_community_collection_rate":
+        # 通过小区ID和收费系统ID查询本月收缴率统计
+        if len(sys.argv) < 4:
+            print("错误：请提供小区ID和收费系统ID参数")
+            print("用法: python3 main.py get_community_collection_rate <小区ID> <收费系统ID>")
+        else:
+            community_id = sys.argv[2]
+            cs_id = sys.argv[3]
+            get_community_collection_rate(community_id, cs_id)
     else:
         print("错误：未知的指令或参数不足")
         print("可用指令:")
@@ -1367,7 +1584,9 @@ if __name__ == "__main__":
         print("  get_custom_range_arrears <收费系统名称> <小区名称> <开始日期> <结束日期> - 自定义时间范围查询欠费")
         print("  get_today_stats <收费系统名称> <小区名称> - 查询小区今日收入统计")
         print("  get_monthly_expense <收费系统名称> <小区名称> - 查询小区本月支出统计")
+        print("  get_collection_rate <收费系统名称> <小区名称> - 查询小区本月收缴率统计")
         print("  get_community_total_arrears <小区ID> - 通过ID查询欠费（旧版）")
         print("  get_community_current_year_arrears <小区ID> - 通过ID查询本年度物业费欠费")
         print("  get_community_today_stats <小区ID> - 通过ID查询今日收入统计")
         print("  get_community_monthly_expense <小区ID> - 通过ID查询本月支出统计")
+        print("  get_community_collection_rate <小区ID> <收费系统ID> - 通过ID查询本月收缴率统计")
