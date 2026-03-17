@@ -1422,6 +1422,178 @@ def get_collection_rate(charge_system_name=None, community_name=None):
             print(f"  - {name}")
 
 
+def get_community_house_info(community_id: str) -> dict:
+    """
+    获取小区房屋信息
+
+    Args:
+        community_id: 小区ID
+
+    Returns:
+        房屋信息数据字典
+    """
+    import random
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+
+    # 使用较大的时间范围来获取所有数据
+    payload = {
+        "communityID": int(community_id),
+        "startTimeStr": "2020-01-01",
+        "endTimeStr": "2030-12-31",
+        "pageSize": 1000,  # 获取足够多的记录
+        "page": 1,
+        "r": random.random()
+    }
+
+    try:
+        response = requests.post(
+            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/getCommunityHouseInfo",
+            json=payload,
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"接口调用失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            return None
+
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get('code') != 0:
+            logger.error(f"获取房屋信息失败: {data.get('msg')}")
+            return None
+
+        return data.get('data', {})
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"接口调用发生异常: {e}")
+        return None
+
+
+def format_arrear_household_stats(community_name: str, house_info_data: dict) -> str:
+    """
+    格式化欠费户数统计数据
+
+    Args:
+        community_name: 小区名称
+        house_info_data: 房屋信息数据
+
+    Returns:
+        格式化后的统计文本
+    """
+    output = [f"### {community_name} 欠费户数统计\n"]
+
+    # 从数据中提取统计信息
+    total_households = house_info_data.get('houseTotal', 0)  # 总房屋数
+    arrear_households = house_info_data.get('arrearHouseTotal', 0)  # 欠费房屋数
+
+    # 计算欠费比例
+    arrear_rate = 0.0
+    if total_households > 0:
+        arrear_rate = (arrear_households / total_households) * 100
+
+    # 基础统计
+    output.append(f"**总房屋数**: {total_households} 户")
+    output.append(f"**欠费户数**: {arrear_households} 户")
+    output.append(f"**欠费比例**: {arrear_rate:.2f}%")
+
+    # 按单元统计欠费户数
+    unit_list = house_info_data.get('unitList', [])
+    if unit_list:
+        output.append("")
+        output.append("**各单元欠费情况**:")
+        for unit in unit_list:
+            unit_name = unit.get('unitName', '未知单元')
+            unit_total = unit.get('totalHouseCount', 0)
+            unit_arrear = unit.get('arrearageHouseCount', 0)
+            output.append(f"  - {unit_name}: {unit_arrear}/{unit_total} 户欠费")
+
+    return "\n".join(output)
+
+
+def get_community_arrear_households(community_id: str, community_name: str = None) -> str:
+    """
+    获取小区欠费户数统计
+
+    Args:
+        community_id: 小区ID
+        community_name: 小区名称（可选）
+
+    Returns:
+        统计结果文本
+    """
+    house_info_data = get_community_house_info(community_id)
+
+    if house_info_data is None:
+        return "获取房屋信息失败"
+
+    if not community_name:
+        community_name = "该小区"
+
+    output = format_arrear_household_stats(community_name, house_info_data)
+    logger.info(f"成功获取小区 {community_id} 的欠费户数统计")
+    print(f"返回数据：{output}")
+    return output
+
+
+def get_arrear_households(charge_system_name=None, community_name=None):
+    """
+    通过名称查询小区欠费户数统计（智能模式）
+
+    Args:
+        charge_system_name: 收费系统名称
+        community_name: 小区名称
+    """
+    # 检查必要参数
+    if not charge_system_name:
+        print("NEED_INFO: 请提供收费系统名称")
+        print("提示：可以先使用 list_charge_systems 命令查看可用的收费系统")
+        return
+
+    if not community_name:
+        print("NEED_INFO: 请提供小区名称")
+        return
+
+    # 获取收费系统映射
+    system_map = get_user_charge_systems(return_map=True)
+    if not system_map:
+        print("获取收费系统列表失败")
+        return
+
+    # 查找收费系统 ID
+    charge_system_id = system_map.get(charge_system_name)
+    if not charge_system_id:
+        print(f"未找到收费系统：{charge_system_name}")
+        print("可用的收费系统：" + ", ".join(system_map.keys()))
+        return
+
+    # 搜索小区
+    community_map = search_community(charge_system_id, community_name, return_map=True)
+    if community_map is None:
+        print("搜索小区失败")
+        return
+
+    if not community_map:
+        print(f"未找到匹配的小区：{community_name}")
+        return
+
+    if len(community_map) == 1:
+        # 只有一个匹配，直接查询
+        comm_name, comm_id = next(iter(community_map.items()))
+        print(f"找到小区：{comm_name}")
+        get_community_arrear_households(str(comm_id), comm_name)
+    else:
+        # 多个匹配，列出供用户选择
+        print(f"找到多个匹配的小区，请使用完整的小区名称重新查询：")
+        for name in community_map.keys():
+            print(f"  - {name}")
+
+
 def logout() -> str:
     """
     登出马克账号。
@@ -1572,6 +1744,23 @@ if __name__ == "__main__":
             community_id = sys.argv[2]
             cs_id = sys.argv[3]
             get_community_collection_rate(community_id, cs_id)
+    elif command == "get_arrear_households":
+        # 查询小区欠费户数统计
+        if len(sys.argv) < 4:
+            print("错误：请提供收费系统名称和小区名称")
+            print("用法: python3 main.py get_arrear_households <收费系统名称> <小区名称>")
+        else:
+            charge_system_name = sys.argv[2]
+            community_name = sys.argv[3]
+            get_arrear_households(charge_system_name, community_name)
+    elif command == "get_community_arrear_households":
+        # 通过小区ID查询欠费户数统计
+        if len(sys.argv) < 3:
+            print("错误：请提供小区ID参数")
+            print("用法: python3 main.py get_community_arrear_households <小区ID>")
+        else:
+            community_id = sys.argv[2]
+            get_community_arrear_households(community_id)
     else:
         print("错误：未知的指令或参数不足")
         print("可用指令:")
@@ -1585,8 +1774,10 @@ if __name__ == "__main__":
         print("  get_today_stats <收费系统名称> <小区名称> - 查询小区今日收入统计")
         print("  get_monthly_expense <收费系统名称> <小区名称> - 查询小区本月支出统计")
         print("  get_collection_rate <收费系统名称> <小区名称> - 查询小区本月收缴率统计")
+        print("  get_arrear_households <收费系统名称> <小区名称> - 查询小区欠费户数统计")
         print("  get_community_total_arrears <小区ID> - 通过ID查询欠费（旧版）")
         print("  get_community_current_year_arrears <小区ID> - 通过ID查询本年度物业费欠费")
         print("  get_community_today_stats <小区ID> - 通过ID查询今日收入统计")
         print("  get_community_monthly_expense <小区ID> - 通过ID查询本月支出统计")
         print("  get_community_collection_rate <小区ID> <收费系统ID> - 通过ID查询本月收缴率统计")
+        print("  get_community_arrear_households <小区ID> - 通过ID查询欠费户数统计")
