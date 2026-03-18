@@ -2094,14 +2094,150 @@ def get_community_cs_init_info(community_id: str, cs_id: str, community_name: st
         return f"接口调用发生异常: {str(e)}"
 
 
+def get_current_login_user_info():
+    """
+    直接从 session 获取当前登录用户信息（不需要团队/小区信息）
+
+    Returns:
+        用户信息文本
+    """
+    session = session_mgr.get_session()
+    if not session:
+        print("未检测到登录信息，请先登录马克智慧物业系统。")
+        return None
+
+    output = ["### 当前登录用户信息\n"]
+
+    # 首先尝试通过 API 获取详细的用户信息（包含昵称、真实姓名等）
+    try:
+        # 获取收费系统列表
+        system_map = get_user_charge_systems(return_map=True)
+        if system_map:
+            # 取第一个收费系统
+            charge_system_name = next(iter(system_map.keys()))
+            charge_system_id = system_map[charge_system_name]
+
+            # 获取该收费系统下的小区列表
+            community_map = search_community(str(charge_system_id), "", return_map=True)
+            if community_map:
+                # 取第一个小区
+                comm_name, comm_id = next(iter(community_map.items()))
+
+                # 调用 API 获取详细用户信息
+                import random
+                ck_dict = ensure_authenticated()
+                if ck_dict:
+                    headers = get_headers_with_cookies(ck_dict, {"communityid": str(comm_id)})
+                    params = {
+                        "communityID": int(comm_id),
+                        "csID": int(charge_system_id),
+                        "r": random.random()
+                    }
+                    response = requests.get(
+                        f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/getCsInitInfo",
+                        params=params,
+                        headers=headers,
+                        timeout=10
+                    )
+                    if response.status_code == 200:
+                        res = response.json()
+                        if res.get('code') == 0:
+                            data = res.get('data', {})
+                            user_info_data = data.get('userInfo', {}).get('data', {})
+
+                            # 用户信息
+                            output.append("**用户信息**:")
+                            if user_info_data:
+                                nick = user_info_data.get('nick', '')
+                                real_nick = user_info_data.get('real_nick', '')
+                                phone = user_info_data.get('phone', '')
+                                uid = user_info_data.get('uid', '')
+
+                                if nick:
+                                    output.append(f"- 昵称: {nick}")
+                                if real_nick:
+                                    output.append(f"- 真实姓名: {real_nick}")
+                                if phone:
+                                    output.append(f"- 手机号: {phone}")
+                                if uid:
+                                    output.append(f"- UID: {uid}")
+                            output.append("")
+
+                            # 小区信息
+                            community_info = data.get('communityInfo', {})
+                            output.append("**小区信息**:")
+                            if community_info:
+                                output.append(f"- 小区名称: {community_info.get('name', '')}")
+                                output.append(f"- 小区ID: {community_info.get('id', '')}")
+                            output.append("")
+
+                            # 收费系统信息
+                            cs_info = data.get('csInfo', {})
+                            output.append("**收费系统信息**:")
+                            if cs_info:
+                                output.append(f"- 系统名称: {cs_info.get('name', '')}")
+                                output.append(f"- 系统ID: {cs_info.get('id', '')}")
+
+                            result = "\n".join(output)
+                            logger.info(f"成功获取当前登录用户详细信息")
+                            return result
+    except Exception as e:
+        logger.warning(f"获取详细用户信息失败，将显示基础信息: {e}")
+
+    # 如果获取详细信息失败，显示基础信息
+    output = ["### 当前登录用户信息\n"]
+
+    # 从 extUIMsg 中获取信息
+    ext_ui_msg = session.get('extUIMsg', {})
+    uid = ext_ui_msg.get('uid')
+    unum = ext_ui_msg.get('unum')
+
+    if uid:
+        output.append(f"**UID**: {uid}")
+    if unum:
+        output.append(f"**UNUM**: {unum}")
+
+    # 从 ck 中获取信息
+    ck = session.get('ck', {})
+    osudb_uid = ck.get('osudb_uid')
+    osudb_appid = ck.get('osudb_appid')
+
+    if osudb_uid and osudb_uid != uid:
+        output.append(f"**osudb_uid**: {osudb_uid}")
+    if osudb_appid:
+        output.append(f"**AppID**: {osudb_appid}")
+
+    # 尝试获取团队信息补充显示
+    try:
+        system_map = get_user_charge_systems(return_map=True)
+        if system_map:
+            output.append("")
+            output.append(f"**已加入的收费系统**: {len(system_map)} 个")
+            for name in system_map.keys():
+                output.append(f"  - {name}")
+    except:
+        pass
+
+    result = "\n".join(output)
+    logger.info(f"成功获取当前登录用户信息")
+    return result
+
+
 def get_current_user_info(charge_system_name=None, community_name=None):
     """
     通过名称查询当前登录用户信息（智能模式）
 
     Args:
-        charge_system_name: 收费系统名称
-        community_name: 小区名称
+        charge_system_name: 收费系统名称（可选，不提供则直接显示登录用户信息）
+        community_name: 小区名称（可选）
     """
+    # 如果没有提供参数，直接显示当前登录用户信息
+    if not charge_system_name and not community_name:
+        result = get_current_login_user_info()
+        if result:
+            print(result)
+        return
+
     # 检查必要参数
     if not charge_system_name:
         print("NEED_INFO: 请提供收费系统名称")
@@ -2444,9 +2580,14 @@ if __name__ == "__main__":
             get_household_arrears_by_name(charge_system_name, community_name, keyword)
     elif command == "get_current_user_info":
         # 查询当前登录用户信息
-        if len(sys.argv) < 4:
-            print("错误：请提供收费系统名称和小区名称")
-            print("用法: python3 main.py get_current_user_info <收费系统名称> <小区名称>")
+        if len(sys.argv) < 3:
+            # 没有参数，直接获取当前登录用户信息
+            get_current_user_info()
+        elif len(sys.argv) < 4:
+            print("错误：请同时提供收费系统名称和小区名称，或者不提供任何参数直接查询登录信息")
+            print("用法:")
+            print("  python3 main.py get_current_user_info  # 直接查询当前登录用户信息")
+            print("  python3 main.py get_current_user_info <收费系统名称> <小区名称>  # 查询完整信息")
         else:
             charge_system_name = sys.argv[2]
             community_name = sys.argv[3]
@@ -2499,7 +2640,8 @@ if __name__ == "__main__":
         print("  get_collection_rate <收费系统名称> <小区名称> - 查询小区本月收缴率统计")
         print("  get_arrear_households <收费系统名称> <小区名称> - 查询小区欠费户数统计")
         print("  get_household_arrears <收费系统名称> <小区名称> <关键词> - 查询房屋/楼栋/单元欠费")
-        print("  get_current_user_info <收费系统名称> <小区名称> - 查询当前登录用户信息")
+        print("  get_current_user_info - 查询当前登录用户信息（无需参数）")
+        print("  get_current_user_info <收费系统名称> <小区名称> - 查询当前登录用户完整信息")
         print("  send_wechat_reminder <收费系统名称> <小区名称> - 发送微信缴费提醒（推荐）")
         print("  send_community_wechat_reminder <小区ID> - 通过小区ID发送微信缴费提醒")
         print("  get_community_total_arrears <小区ID> - 通过ID查询欠费（旧版）")

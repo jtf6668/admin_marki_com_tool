@@ -39,7 +39,8 @@ AI 应当根据需求选择以下指令运行：
 - **查询小区本月收缴率统计**: `python3 {baseDir}/scripts/main.py get_collection_rate <收费系统名称> <小区名称>`
 - **查询小区欠费户数统计**: `python3 {baseDir}/scripts/main.py get_arrear_households <收费系统名称> <小区名称>`
 - **查询房屋/楼栋/单元欠费总额**: `python3 {baseDir}/scripts/main.py get_household_arrears <收费系统名称> <小区名称> <关键词>`
-- **查询当前登录用户信息**: `python3 {baseDir}/scripts/main.py get_current_user_info <收费系统名称> <小区名称>`
+- **查询当前登录用户信息（推荐，无需参数）**: `python3 {baseDir}/scripts/main.py get_current_user_info`
+- **查询当前登录用户完整信息**: `python3 {baseDir}/scripts/main.py get_current_user_info <收费系统名称> <小区名称>`
 - **发送微信缴费提醒（推荐）**: `python3 {baseDir}/scripts/main.py send_wechat_reminder <收费系统名称> <小区名称>`
 - **通过小区ID发送微信缴费提醒（旧版）**: `python3 {baseDir}/scripts/main.py send_community_wechat_reminder <小区ID>`
 - **通过小区ID查询欠费总额（旧版）**: `python3 {baseDir}/scripts/main.py get_community_total_arrears <小区ID>`
@@ -225,12 +226,13 @@ AI 应当根据需求选择以下指令运行：
 - "查询当前登录用户信息"
 - "我是谁"
 - "查看我的用户信息"
+- "现在登录的是哪个账号？"
+- "uid是什么？"
 
 **处理步骤**：
-1. 只要用户询问关于当前登录用户的信息，都直接调用 `get_current_user_info` 命令获取完整的用户信息
-2. 如果信息完整（收费系统名称、小区名称都有），直接调用 `get_current_user_info <收费系统名称> <小区名称>`
-3. 如果信息不完整，按照前面的情况逐步询问用户缺失的信息
-4. 展示完整的用户信息、小区信息和收费系统信息给用户
+1. 只要用户询问关于当前登录用户的信息（包括账号、uid、用户名等），都直接调用 `get_current_user_info` 命令**不带任何参数**获取用户信息
+2. 不需要询问收费系统名称或小区名称，直接调用 `python3 {baseDir}/scripts/main.py get_current_user_info`
+3. 该命令会直接从登录 session 中读取 uid 等信息并展示给用户
 
 ---
 
