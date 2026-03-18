@@ -2171,21 +2171,18 @@ def send_wechat_payment_reminder(community_id: str, community_name: str = None) 
     headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
 
     payload = {
-        "sendType": 3,
-        "payState": 2,
-        "houseLoc": [{"id": int(community_id), "houseType": 1}],
-        "templateId": -1,
         "userTypes": [1],
+        "houseLoc": [{"id": int(community_id), "houseType": 1}],
+        "selectList": [],
         "assetType": 1,
         "tagIdList": None,
         "selectAll": True,
-        "selectList": [],
-        "communityID": int(community_id)
+        "sendType": 3
     }
 
     try:
         response = requests.post(
-            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/sendMessage",
+            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/wxCallSend",
             json=payload,
             headers=headers,
             timeout=10
