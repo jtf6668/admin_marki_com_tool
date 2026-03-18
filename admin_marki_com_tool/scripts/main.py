@@ -2152,6 +2152,122 @@ def get_current_user_info(charge_system_name=None, community_name=None):
         print(result)
 
 
+def send_wechat_payment_reminder(community_id: str, community_name: str = None) -> dict:
+    """
+    发送微信缴费提醒
+
+    Args:
+        community_id: 小区ID
+        community_name: 小区名称（可选）
+
+    Returns:
+        API响应数据字典
+    """
+    import random
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+
+    payload = {
+        "sendType": 3,
+        "payState": 2,
+        "houseLoc": [{"id": int(community_id), "houseType": 1}],
+        "templateId": -1,
+        "userTypes": [1],
+        "assetType": 1,
+        "tagIdList": None,
+        "selectAll": True,
+        "selectList": [],
+        "communityID": int(community_id)
+    }
+
+    try:
+        response = requests.post(
+            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/sendMessage",
+            json=payload,
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"接口调用失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            return None
+
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get('code') != 0:
+            logger.error(f"发送微信缴费提醒失败: {data.get('msg')}")
+            return None
+
+        logger.info(f"成功发送微信缴费提醒到小区 {community_id}")
+        return data
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"接口调用发生异常: {e}")
+        return None
+
+
+def send_wechat_payment_reminder_by_name(charge_system_name=None, community_name=None):
+    """
+    通过名称发送微信缴费提醒（智能模式）
+
+    Args:
+        charge_system_name: 收费系统名称
+        community_name: 小区名称
+    """
+    # 检查必要参数
+    if not charge_system_name:
+        print("NEED_INFO: 请提供收费系统名称")
+        print("提示：可以先使用 list_charge_systems 命令查看可用的收费系统")
+        return
+
+    if not community_name:
+        print("NEED_INFO: 请提供小区名称")
+        return
+
+    # 获取收费系统映射
+    system_map = get_user_charge_systems(return_map=True)
+    if not system_map:
+        print("获取收费系统列表失败")
+        return
+
+    # 查找收费系统 ID
+    charge_system_id = system_map.get(charge_system_name)
+    if not charge_system_id:
+        print(f"未找到收费系统：{charge_system_name}")
+        print("可用的收费系统：" + ", ".join(system_map.keys()))
+        return
+
+    # 搜索小区
+    community_map = search_community(charge_system_id, community_name, return_map=True)
+    if community_map is None:
+        print("搜索小区失败")
+        return
+
+    if not community_map:
+        print(f"未找到匹配的小区：{community_name}")
+        return
+
+    if len(community_map) == 1:
+        # 只有一个匹配，直接发送
+        comm_name, comm_id = next(iter(community_map.items()))
+        print(f"找到小区：{comm_name}")
+        result = send_wechat_payment_reminder(str(comm_id), comm_name)
+        if result:
+            print(f"微信缴费提醒发送成功！")
+            print(f"响应消息：{result.get('msg', '无')}")
+        else:
+            print("微信缴费提醒发送失败，请查看日志获取详细信息")
+    else:
+        # 多个匹配，列出供用户选择
+        print(f"找到多个匹配的小区，请使用完整的小区名称重新查询：")
+        for name in community_map.keys():
+            print(f"  - {name}")
+
+
 def logout() -> str:
     """
     登出马克账号。
@@ -2338,6 +2454,28 @@ if __name__ == "__main__":
             charge_system_name = sys.argv[2]
             community_name = sys.argv[3]
             get_current_user_info(charge_system_name, community_name)
+    elif command == "send_wechat_reminder":
+        # 通过名称发送微信缴费提醒（推荐）
+        if len(sys.argv) < 4:
+            print("错误：请提供收费系统名称和小区名称")
+            print("用法: python3 main.py send_wechat_reminder <收费系统名称> <小区名称>")
+        else:
+            charge_system_name = sys.argv[2]
+            community_name = sys.argv[3]
+            send_wechat_payment_reminder_by_name(charge_system_name, community_name)
+    elif command == "send_community_wechat_reminder":
+        # 通过小区ID发送微信缴费提醒（旧版）
+        if len(sys.argv) < 3:
+            print("错误：请提供小区ID参数")
+            print("用法: python3 main.py send_community_wechat_reminder <小区ID>")
+        else:
+            community_id = sys.argv[2]
+            result = send_wechat_payment_reminder(community_id)
+            if result:
+                print(f"微信缴费提醒发送成功！")
+                print(f"响应消息：{result.get('msg', '无')}")
+            else:
+                print("微信缴费提醒发送失败，请查看日志获取详细信息")
     elif command == "get_community_cs_init_info":
         # 通过小区ID和收费系统ID查询初始化信息
         if len(sys.argv) < 4:
@@ -2365,6 +2503,8 @@ if __name__ == "__main__":
         print("  get_arrear_households <收费系统名称> <小区名称> - 查询小区欠费户数统计")
         print("  get_household_arrears <收费系统名称> <小区名称> <关键词> - 查询房屋/楼栋/单元欠费")
         print("  get_current_user_info <收费系统名称> <小区名称> - 查询当前登录用户信息")
+        print("  send_wechat_reminder <收费系统名称> <小区名称> - 发送微信缴费提醒（推荐）")
+        print("  send_community_wechat_reminder <小区ID> - 通过小区ID发送微信缴费提醒")
         print("  get_community_total_arrears <小区ID> - 通过ID查询欠费（旧版）")
         print("  get_community_current_year_arrears <小区ID> - 通过ID查询本年度物业费欠费")
         print("  get_community_today_stats <小区ID> - 通过ID查询今日收入统计")
