@@ -39,9 +39,9 @@ def ensure_authenticated() -> dict:
         #检查是否有正在运行的授权服务器，如果有，直接使用缓存的 URL 提示用户登录
         existing_url = session_mgr.get_running_server_url()
         if existing_url:
-            print(f"AUTH_REQUIRED:检测到您未登录。")
-            print(f"1. 请点击此链接登录：{existing_url}")
-            print(f"2. 登录成功后，此窗口会自动检测到状态，请稍等片刻后再次询问。")
+            print(f"AUTH_REQUIRED")
+            print(f"LOGIN_URL:{existing_url}")
+            print(f"MESSAGE:检测到您未登录马克智慧物业系统，请点击以下链接登录：")
             return None
 
         # 启动接收器（异步非阻塞）
@@ -73,9 +73,9 @@ def ensure_authenticated() -> dict:
         # 核心：保存 PID 和 URL 供下次查询使用
         session_mgr.save_server_info(process.pid, login_url)
 
-        print(f"AUTH_REQUIRED:检测到您未登录。")
-        print(f"1. 请点击此链接登录：{login_url}")
-        print(f"2. 登录成功后，此窗口会自动检测到状态，请稍等片刻后再次询问。")
+        print(f"AUTH_REQUIRED")
+        print(f"LOGIN_URL:{login_url}")
+        print(f"MESSAGE:检测到您未登录马克智慧物业系统，请点击以下链接登录：")
 
         logger.info(f"提示用户登录，链接: {login_url}")
         return None
