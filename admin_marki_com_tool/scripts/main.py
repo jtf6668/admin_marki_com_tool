@@ -24,6 +24,158 @@ APP_ID = "1435186595"
 session_mgr = SessionManager()
 
 
+# === 匹配缓存相关函数 ===
+def get_match_cache_path():
+    """获取匹配缓存文件路径"""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_dir, '.match_cache.json')
+
+
+def save_match_cache(community_id, nodes):
+    """
+    保存匹配列表到缓存
+
+    Args:
+        community_id: 小区ID
+        nodes: 匹配的节点列表
+    """
+    cache_data = {
+        "timestamp": time.time(),
+        "community_id": str(community_id),
+        "nodes": nodes
+    }
+    try:
+        with open(get_match_cache_path(), 'w', encoding='utf-8') as f:
+            json.dump(cache_data, f, ensure_ascii=False, indent=2)
+        logger.info(f"已保存匹配缓存，包含 {len(nodes)} 个节点")
+    except Exception as e:
+        logger.warning(f"保存匹配缓存失败: {e}")
+
+
+def load_match_cache():
+    """
+    从缓存加载匹配列表（5分钟内有效）
+
+    Returns:
+        dict: {community_id, nodes} 或 None
+    """
+    cache_path = get_match_cache_path()
+    if not os.path.exists(cache_path):
+        return None
+
+    try:
+        with open(cache_path, 'r', encoding='utf-8') as f:
+            cache_data = json.load(f)
+
+        # 检查是否过期（5分钟）
+        if time.time() - cache_data.get('timestamp', 0) > 300:
+            logger.info("匹配缓存已过期")
+            clear_match_cache()
+            return None
+
+        logger.info(f"从缓存加载了 {len(cache_data.get('nodes', []))} 个匹配节点")
+        return cache_data
+    except Exception as e:
+        logger.warning(f"加载匹配缓存失败: {e}")
+        return None
+
+
+def clear_match_cache():
+    """清除匹配缓存"""
+    cache_path = get_match_cache_path()
+    if os.path.exists(cache_path):
+        try:
+            os.remove(cache_path)
+            logger.info("已清除匹配缓存")
+        except Exception as e:
+            logger.warning(f"清除匹配缓存失败: {e}")
+
+
+# === 用户选择解析函数 ===
+def parse_user_selection(input_str, matching_nodes):
+    """
+    解析用户选择，支持多种方式
+
+    Args:
+        input_str: 用户输入字符串
+        matching_nodes: 上一次的匹配节点列表
+
+    Returns:
+        dict: 选中的节点，或 None（表示需要继续模糊匹配）
+    """
+    if not input_str or not matching_nodes:
+        return None
+
+    input_str = input_str.strip()
+    node_count = len(matching_nodes)
+
+    # 中文数字映射
+    chinese_numbers = {
+        "一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+        "六": 6, "七": 7, "八": 8, "九": 9, "十": 10
+    }
+
+    # 1. 检查是否为阿拉伯数字序号（"1"、"2"）
+    if input_str.isdigit():
+        idx = int(input_str) - 1
+        if 0 <= idx < node_count:
+            logger.info(f"用户通过阿拉伯数字选择: {idx + 1}")
+            return matching_nodes[idx]
+
+    # 2. 检查是否为中文数字序号（"一"、"二"）
+    if input_str in chinese_numbers:
+        idx = chinese_numbers[input_str] - 1
+        if 0 <= idx < node_count:
+            logger.info(f"用户通过中文数字选择: {input_str}")
+            return matching_nodes[idx]
+
+    # 3. 检查是否为文字描述（"第一个"、"第二个"、"最后一个"）
+    if "第" in input_str and ("个" in input_str or "项" in input_str):
+        # 提取中文或阿拉伯数字
+        for cn_num, num in chinese_numbers.items():
+            if cn_num in input_str:
+                idx = num - 1
+                if 0 <= idx < node_count:
+                    logger.info(f"用户通过文字描述选择: {input_str}")
+                    return matching_nodes[idx]
+        # 检查阿拉伯数字
+        for char in input_str:
+            if char.isdigit():
+                idx = int(char) - 1
+                if 0 <= idx < node_count:
+                    logger.info(f"用户通过文字描述选择: {input_str}")
+                    return matching_nodes[idx]
+
+    if "最后" in input_str:
+        logger.info("用户选择最后一个")
+        return matching_nodes[-1]
+
+    # 4. 检查是否包含 "/"，尝试精确匹配
+    if "/" in input_str:
+        # 先尝试完全匹配
+        for node in matching_nodes:
+            if node.get('full_name', node.get('name', '')) == input_str:
+                logger.info(f"用户通过完整路径精确匹配: {input_str}")
+                return node
+        # 再尝试包含匹配（忽略"查询"、"欠费"等词）
+        clean_input = input_str.replace("查询", "").replace("的欠费", "").replace("欠费", "").strip()
+        for node in matching_nodes:
+            node_name = node.get('full_name', node.get('name', ''))
+            if clean_input in node_name:
+                logger.info(f"用户通过路径包含匹配: {clean_input} -> {node_name}")
+                return node
+
+    # 5. 尝试直接匹配节点名称（去除"查询"、"欠费"等词）
+    clean_input = input_str.replace("查询", "").replace("的欠费", "").replace("欠费", "").strip()
+    for node in matching_nodes:
+        node_name = node.get('full_name', node.get('name', ''))
+        if clean_input == node_name or clean_input == node.get('name', ''):
+            logger.info(f"用户通过名称匹配: {clean_input}")
+            return node
+
+    return None
+
+
 def ensure_authenticated() -> dict:
     """
     确保用户已登录，如果未登录则启动授权服务器。
@@ -1699,13 +1851,14 @@ def split_keywords(keyword: str) -> list:
     return parts if parts else [keyword]
 
 
-def find_matching_nodes(community_data: dict, keyword: str) -> list:
+def find_matching_nodes(community_data: dict, keyword: str, exact_match: bool = False) -> list:
     """
     从嵌套结构中找出所有匹配的节点，并按层级关系筛选
 
     Args:
         community_data: getCommunityInfo 返回的数据
         keyword: 用户输入的关键词
+        exact_match: 是否使用精确匹配模式（完全匹配 full_name）
 
     Returns:
         筛选后的节点列表，每个节点包含 id, name, level, path
@@ -1719,6 +1872,66 @@ def find_matching_nodes(community_data: dict, keyword: str) -> list:
     if not building_list:
         return []
 
+    # 精确匹配模式
+    if exact_match:
+        target_name = keyword.strip()
+        logger.info(f"使用精确匹配模式，目标: {target_name}")
+        all_nodes = []
+        for building in building_list:
+            building_name = building.get('name', '')
+            building_id = building.get('id')
+            building_path = [building_id]
+            full_building_name = building_name
+
+            if full_building_name == target_name:
+                all_nodes.append({
+                    'id': building_id,
+                    'name': building_name,
+                    'full_name': full_building_name,
+                    'level': 'building',
+                    'id_type': 2,
+                    'path': building_path.copy()
+                })
+
+            unit_list = building.get('unitList', [])
+            for unit in unit_list:
+                unit_name = unit.get('name', '')
+                unit_id = unit.get('id')
+                unit_path = building_path + [unit_id]
+                full_unit_name = f"{building_name}/{unit_name}"
+
+                if full_unit_name == target_name:
+                    all_nodes.append({
+                        'id': unit_id,
+                        'name': f"{building_name}/{unit_name}",
+                        'full_name': full_unit_name,
+                        'level': 'unit',
+                        'id_type': 3,
+                        'path': unit_path.copy()
+                    })
+
+                house_list = unit.get('houseList', [])
+                for house in house_list:
+                    house_name = house.get('name', '')
+                    house_id = house.get('id')
+                    house_path = unit_path + [house_id]
+                    full_house_name = f"{building_name}/{unit_name}/{house_name}"
+
+                    if full_house_name == target_name:
+                        all_nodes.append({
+                            'id': house_id,
+                            'name': f"{building_name}/{unit_name}/{house_name}",
+                            'full_name': full_house_name,
+                            'level': 'house',
+                            'id_type': 4,
+                            'path': house_path.copy()
+                        })
+
+        if all_nodes:
+            logger.info(f"精确匹配找到 {len(all_nodes)} 个节点")
+        return all_nodes
+
+    # 模糊匹配模式
     # 拆分关键词
     keywords = split_keywords(keyword)
     if not keywords:
@@ -1957,20 +2170,63 @@ def get_household_arrears_by_name(charge_system_name=None, community_name=None, 
     comm_name, comm_id = next(iter(community_map.items()))
     print(f"找到小区：{comm_name}")
 
-    # 拆分关键词
-    keywords = split_keywords(keyword)
-    # 先用最后一个（最具体的）关键词搜索，获取包含完整路径的节点
-    search_kw = keywords[-1] if keywords else keyword
-    household_data = search_household_structure(str(comm_id), search_kw)
+    # 先尝试从缓存加载上一次的匹配列表
+    cache_data = load_match_cache()
+    if cache_data and str(cache_data.get('community_id')) == str(comm_id):
+        cached_nodes = cache_data.get('nodes', [])
+        if cached_nodes:
+            # 尝试解析用户选择
+            selected_node = parse_user_selection(keyword, cached_nodes)
+            if selected_node:
+                logger.info(f"用户选择了: {selected_node.get('name')}")
+                # 清除缓存，使用选中的节点查询欠费
+                clear_match_cache()
+                get_household_arrears(str(comm_id), selected_node['id'], selected_node['id_type'], selected_node['name'], comm_name)
+                return
+            else:
+                # 解析失败，清除缓存，按新关键词重新搜索
+                logger.info("无法解析用户选择，清除缓存并重新搜索")
+                clear_match_cache()
+
+    # 清理关键词：去除"查询"、"的欠费"等词
+    clean_keyword = keyword.replace("查询", "").replace("的欠费", "").replace("欠费", "").strip()
+
+    # 检查是否使用精确匹配（包含 "/"）
+    use_exact_match = "/" in clean_keyword
+
+    # 获取完整房屋结构用于本地匹配（搜索空字符串获取完整结构）
+    household_data = search_household_structure(str(comm_id), "")
 
     if household_data is None:
         print("搜索房屋结构失败")
         return
 
-    # 找出匹配的节点（使用原始关键词进行多关键词匹配）
-    matching_nodes = find_matching_nodes(household_data, keyword)
+    # 找出匹配的节点
+    if use_exact_match:
+        # 先尝试精确匹配
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, exact_match=True)
+        if not matching_nodes:
+            # 精确匹配失败，降级到模糊匹配
+            logger.info("精确匹配未找到结果，使用模糊匹配")
+            # 拆分关键词，用最后一个关键词搜索（可能被 "/" 分割）
+            keywords = clean_keyword.split("/")
+            search_kw = keywords[-1] if keywords else clean_keyword
+            # 重新获取针对该关键词的搜索结果（可能更准确）
+            household_data_for_search = search_household_structure(str(comm_id), search_kw)
+            if household_data_for_search:
+                household_data = household_data_for_search
+            matching_nodes = find_matching_nodes(household_data, clean_keyword)
+    else:
+        # 模糊匹配模式：先用关键词搜索获取更相关的结果
+        keywords = split_keywords(clean_keyword)
+        search_kw = keywords[-1] if keywords else clean_keyword
+        household_data_for_search = search_household_structure(str(comm_id), search_kw)
+        if household_data_for_search:
+            household_data = household_data_for_search
+        matching_nodes = find_matching_nodes(household_data, clean_keyword)
+
     if not matching_nodes:
-        print(f"未找到与'{keyword}'匹配的楼栋/单元/房屋，请确认输入是否正确")
+        print(f"未找到与'{clean_keyword}'匹配的楼栋/单元/房屋，请确认输入是否正确")
         return
 
     if len(matching_nodes) == 1:
@@ -1978,7 +2234,8 @@ def get_household_arrears_by_name(charge_system_name=None, community_name=None, 
         node = matching_nodes[0]
         get_household_arrears(str(comm_id), node['id'], node['id_type'], node['name'], comm_name)
     else:
-        # 多个匹配，列出供用户选择
+        # 多个匹配，保存到缓存并列出供用户选择
+        save_match_cache(comm_id, matching_nodes)
         print("MULTI_MATCH:")
         for idx, node in enumerate(matching_nodes, 1):
             level_label = {
