@@ -2830,7 +2830,7 @@ def get_meter_list(community_id: str, house_id: str) -> dict:
 
 def get_meter_status(community_id: str, meter_id: str) -> dict:
     """
-    获取指定仪器的状态（包括上期读数）
+    获取指定仪器的状态（包括当前读数）
 
     Args:
         community_id: 小区ID
@@ -3099,7 +3099,7 @@ def do_meter_reading_by_name(charge_system_name=None, community_name=None, keywo
 
 def get_meter_status_by_name(charge_system_name=None, community_name=None, keyword=None, meter_type_str=None):
     """
-    智能查询上期读数入口函数，处理整个查询流程
+    智能查询当前读数入口函数，处理整个查询流程
 
     Args:
         charge_system_name: 收费系统名称
@@ -3194,7 +3194,7 @@ def get_meter_status_by_name(charge_system_name=None, community_name=None, keywo
                 clear_match_cache()
 
     # 清理关键词
-    clean_keyword = keyword.replace("上期读数", "").replace("读数", "").replace("的", "").strip()
+    clean_keyword = keyword.replace("当前读数", "").replace("读数", "").replace("的", "").strip()
 
     # 检查是否使用精确匹配
     use_exact_match = "/" in clean_keyword
@@ -3318,7 +3318,7 @@ def _process_meter_reading(community_id: str, house_node: dict, meter_type: int,
 
 def _process_get_meter_status(community_id: str, house_node: dict, meter_type: int, meter_type_label: str, community_name: str):
     """
-    内部函数：处理获取上期读数流程
+    内部函数：处理获取当前读数流程
 
     Args:
         community_id: 小区ID
@@ -3360,17 +3360,17 @@ def _process_get_meter_status(community_id: str, house_node: dict, meter_type: i
             print(f"{idx}. {m.get('name', '未知')}")
         return
 
-    # 只有一个匹配的仪器，获取上期读数
+    # 只有一个匹配的仪器，获取当前读数
     meter = matching_meters[0]
     meter_id = meter.get('id')
     meter_name = meter.get('name', '未知')
 
     print(f"找到{meter_type_label}：{meter_name}")
 
-    # 获取仪器状态（上期读数）
+    # 获取仪器状态（当前读数）
     result = get_meter_status(community_id, meter_id)
     if not result:
-        print("获取上期读数失败")
+        print("获取当前读数失败")
         return
 
     data = result.get('data', {})
@@ -3381,7 +3381,7 @@ def _process_get_meter_status(community_id: str, house_node: dict, meter_type: i
     print(f"**房屋位置**: {house_name}")
     print(f"**仪器类型**: {meter_type_label}")
     print(f"**仪器名称**: {meter_name}")
-    print(f"**上期读数**: {now_num}")
+    print(f"**当前读数**: {now_num}")
 
 
 def logout() -> str:
@@ -3622,7 +3622,7 @@ if __name__ == "__main__":
             remark = sys.argv[7] if len(sys.argv) > 7 else ""
             do_meter_reading_by_name(charge_system_name, community_name, keyword, meter_type_str, reading, remark)
     elif command == "get_meter_status":
-        # 智能查询上期读数入口
+        # 智能查询当前读数入口
         if len(sys.argv) < 6:
             print("错误：请提供收费系统名称、小区名称、房屋关键词和仪器类型")
             print("用法: python3 main.py get_meter_status <收费系统名称> <小区名称> <房屋关键词> <仪器类型>")
@@ -3677,7 +3677,7 @@ if __name__ == "__main__":
         print("  get_current_user_info <收费系统名称> <小区名称> - 查询当前登录用户完整信息")
         print("  send_wechat_reminder <收费系统名称> <小区名称> - 发送微信缴费提醒（推荐）")
         print("  meter_reading <收费系统名称> <小区名称> <房屋关键词> <仪器类型> <读数> [备注] - 智能抄表入口")
-        print("  get_meter_status <收费系统名称> <小区名称> <房屋关键词> <仪器类型> - 查询电表/水表上期读数")
+        print("  get_meter_status <收费系统名称> <小区名称> <房屋关键词> <仪器类型> - 查询电表/水表当前读数")
         print("  send_community_wechat_reminder <小区ID> - 通过小区ID发送微信缴费提醒")
         print("  get_community_total_arrears <小区ID> - 通过ID查询欠费（旧版）")
         print("  get_community_current_year_arrears <小区ID> - 通过ID查询本年度物业费欠费")
