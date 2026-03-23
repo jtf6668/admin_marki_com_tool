@@ -1911,6 +1911,67 @@ def search_household_structure(community_id: str, keyword: str) -> dict:
         return None
 
 
+def convert_chinese_numbers(text: str) -> str:
+    """
+    将中文数字转换为阿拉伯数字
+
+    Args:
+        text: 包含中文数字的文本，如"一栋一单元103"
+
+    Returns:
+        转换后的文本，如"1栋1单元103"
+    """
+    if not text:
+        return text
+
+    # 中文数字到阿拉伯数字的映射
+    chinese_to_arabic = {
+        '零': '0', '〇': '0',
+        '一': '1', '二': '2', '三': '3', '四': '4',
+        '五': '5', '六': '6', '七': '7', '八': '8', '九': '9',
+        '壹': '1', '贰': '2', '叁': '3', '肆': '4',
+        '伍': '5', '陆': '6', '柒': '7', '捌': '8', '玖': '9'
+    }
+
+    # 处理"十"的特殊情况
+    # 十 -> 10, 十一 -> 11, 二十 -> 20, 二十一 -> 21
+    result = []
+    i = 0
+    n = len(text)
+
+    while i < n:
+        char = text[i]
+
+        # 处理"十"
+        if char == '十':
+            # 检查前面是否有数字
+            has_prefix = i > 0 and text[i-1] in chinese_to_arabic
+            # 检查后面是否有数字
+            has_suffix = i + 1 < n and text[i+1] in chinese_to_arabic
+
+            if not has_prefix and not has_suffix:
+                # 单独的"十" -> "10"
+                result.append('10')
+            elif has_prefix and not has_suffix:
+                # "二十" -> "20"
+                result.append('0')
+            elif not has_prefix and has_suffix:
+                # "十一" -> "1"
+                result.append('1')
+            # else: "二十一" -> 前面已经处理了"二"，这里处理"十"后面的"一"，所以"十"直接忽略
+            i += 1
+        elif char in chinese_to_arabic:
+            # 普通中文数字
+            result.append(chinese_to_arabic[char])
+            i += 1
+        else:
+            # 非数字字符直接添加
+            result.append(char)
+            i += 1
+
+    return ''.join(result)
+
+
 def split_keywords(keyword: str) -> list:
     """
     将用户输入拆分成多个关键词
@@ -1966,7 +2027,7 @@ def split_keywords(keyword: str) -> list:
     return parts if parts else [keyword]
 
 
-def find_matching_nodes(community_data: dict, keyword: str, exact_match: bool = False) -> list:
+def find_matching_nodes(community_data: dict, keyword: str, exact_match: bool = False, relaxed_match: bool = False) -> list:
     """
     从嵌套结构中找出所有匹配的节点，并按层级关系筛选
 
@@ -1974,6 +2035,7 @@ def find_matching_nodes(community_data: dict, keyword: str, exact_match: bool = 
         community_data: getCommunityInfo 返回的数据
         keyword: 用户输入的关键词
         exact_match: 是否使用精确匹配模式（完全匹配 full_name）
+        relaxed_match: 是否使用宽松匹配模式（支持中文数字转换、部分关键词匹配）
 
     Returns:
         筛选后的节点列表，每个节点包含 id, name, level, path
@@ -2046,79 +2108,124 @@ def find_matching_nodes(community_data: dict, keyword: str, exact_match: bool = 
             logger.info(f"精确匹配找到 {len(all_nodes)} 个节点")
         return all_nodes
 
-    # 模糊匹配模式
-    # 拆分关键词
-    keywords = split_keywords(keyword)
-    if not keywords:
-        return []
+    # 准备匹配用的关键词列表
+    search_keywords_list = []
 
-    # 所有关键词都转为小写用于匹配
-    keywords_lower = [k.lower() for k in keywords]
+    # 原始关键词
+    original_keywords = split_keywords(keyword)
+    if original_keywords:
+        search_keywords_list.append((original_keywords, False))  # (关键词列表, 是否需要部分匹配)
+
+    # 如果是宽松模式，添加中文数字转换后的关键词
+    if relaxed_match:
+        converted_keyword = convert_chinese_numbers(keyword)
+        if converted_keyword != keyword:
+            converted_keywords = split_keywords(converted_keyword)
+            if converted_keywords:
+                search_keywords_list.append((converted_keywords, False))
+                logger.info(f"添加中文数字转换后的关键词: {converted_keywords}")
+
+        # 提取所有数字用于纯数字匹配
+        import re
+        digits_only = ''.join(re.findall(r'\d+', keyword + converted_keyword))
+        if digits_only:
+            search_keywords_list.append(([digits_only], True))
+            logger.info(f"添加纯数字匹配关键词: {digits_only}")
+
+        # 最后添加部分匹配模式
+        search_keywords_list.append((original_keywords, True))
 
     all_nodes = []
+    seen_node_ids = set()
 
-    # 遍历所有节点，收集匹配的（不依赖API的搜索结果，完全在本地匹配）
-    for building in building_list:
-        building_name = building.get('name', '')
-        building_id = building.get('id')
-        building_path = [building_id]
-        full_building_name = building_name
+    # 遍历所有搜索关键词组合
+    for keywords, use_partial_match in search_keywords_list:
+        if not keywords:
+            continue
 
-        # 检查楼宇是否匹配：所有关键词都要出现在完整路径中
-        node_full_text = full_building_name.lower()
-        node_matches = all(k in node_full_text for k in keywords_lower)
+        # 所有关键词都转为小写用于匹配
+        keywords_lower = [k.lower() for k in keywords]
 
-        if node_matches:
-            all_nodes.append({
-                'id': building_id,
-                'name': building_name,
-                'full_name': full_building_name,
-                'level': 'building',
-                'id_type': 2,
-                'path': building_path.copy()
-            })
+        # 遍历所有节点，收集匹配的
+        for building in building_list:
+            building_name = building.get('name', '')
+            building_id = building.get('id')
+            building_path = [building_id]
+            full_building_name = building_name
 
-        unit_list = building.get('unitList', [])
-        for unit in unit_list:
-            unit_name = unit.get('name', '')
-            unit_id = unit.get('id')
-            unit_path = building_path + [unit_id]
-            full_unit_name = f"{building_name}/{unit_name}"
-
-            # 检查单元是否匹配
-            node_full_text = full_unit_name.lower()
-            node_matches = all(k in node_full_text for k in keywords_lower)
-
-            if node_matches:
-                all_nodes.append({
-                    'id': unit_id,
-                    'name': f"{building_name}/{unit_name}",
-                    'full_name': full_unit_name,
-                    'level': 'unit',
-                    'id_type': 3,
-                    'path': unit_path.copy()
-                })
-
-            house_list = unit.get('houseList', [])
-            for house in house_list:
-                house_name = house.get('name', '')
-                house_id = house.get('id')
-                house_path = unit_path + [house_id]
-                full_house_name = f"{building_name}/{unit_name}/{house_name}"
-
-                # 检查房屋是否匹配
-                node_full_text = full_house_name.lower()
+            # 检查楼宇是否匹配
+            node_full_text = full_building_name.lower()
+            if use_partial_match:
+                # 部分匹配：至少有一个关键词出现
+                node_matches = any(k in node_full_text for k in keywords_lower)
+            else:
+                # 完整匹配：所有关键词都要出现
                 node_matches = all(k in node_full_text for k in keywords_lower)
 
-                if node_matches:
+            if node_matches and building_id not in seen_node_ids:
+                seen_node_ids.add(building_id)
+                all_nodes.append({
+                    'id': building_id,
+                    'name': building_name,
+                    'full_name': full_building_name,
+                    'level': 'building',
+                    'id_type': 2,
+                    'path': building_path.copy()
+                })
+
+            unit_list = building.get('unitList', [])
+            for unit in unit_list:
+                unit_name = unit.get('name', '')
+                unit_id = unit.get('id')
+                unit_path = building_path + [unit_id]
+                full_unit_name = f"{building_name}/{unit_name}"
+
+                # 检查单元是否匹配
+                node_full_text = full_unit_name.lower()
+                if use_partial_match:
+                    node_matches = any(k in node_full_text for k in keywords_lower)
+                else:
+                    node_matches = all(k in node_full_text for k in keywords_lower)
+
+                if node_matches and unit_id not in seen_node_ids:
+                    seen_node_ids.add(unit_id)
                     all_nodes.append({
-                        'id': house_id,
-                        'name': f"{building_name}/{unit_name}/{house_name}",
-                        'full_name': full_house_name,
-                        'level': 'house',
-                        'id_type': 4,
-                        'path': house_path.copy()
+                        'id': unit_id,
+                        'name': f"{building_name}/{unit_name}",
+                        'full_name': full_unit_name,
+                        'level': 'unit',
+                        'id_type': 3,
+                        'path': unit_path.copy()
                     })
+
+                house_list = unit.get('houseList', [])
+                for house in house_list:
+                    house_name = house.get('name', '')
+                    house_id = house.get('id')
+                    house_path = unit_path + [house_id]
+                    full_house_name = f"{building_name}/{unit_name}/{house_name}"
+
+                    # 检查房屋是否匹配
+                    node_full_text = full_house_name.lower()
+                    if use_partial_match:
+                        node_matches = any(k in node_full_text for k in keywords_lower)
+                    else:
+                        node_matches = all(k in node_full_text for k in keywords_lower)
+
+                    if node_matches and house_id not in seen_node_ids:
+                        seen_node_ids.add(house_id)
+                        all_nodes.append({
+                            'id': house_id,
+                            'name': f"{building_name}/{unit_name}/{house_name}",
+                            'full_name': full_house_name,
+                            'level': 'house',
+                            'id_type': 4,
+                            'path': house_path.copy()
+                        })
+
+        # 如果已经找到匹配节点，且不是部分匹配模式，就不需要继续尝试更宽松的匹配了
+        if all_nodes and not use_partial_match:
+            break
 
     if not all_nodes:
         return []
@@ -2140,6 +2247,89 @@ def find_matching_nodes(community_data: dict, keyword: str, exact_match: bool = 
             selected_nodes.append(node)
 
     return selected_nodes
+
+
+def generate_candidates(community_data: dict, keyword: str, max_candidates: int = 20) -> list:
+    """
+    从完整小区结构中提取相关的候选房屋
+
+    Args:
+        community_data: getCommunityInfo 返回的完整数据
+        keyword: 用户原始查询关键词
+        max_candidates: 最大返回候选数量
+
+    Returns:
+        候选房屋列表，按楼栋、单元排序
+    """
+    if not community_data:
+        return []
+
+    building_list = community_data.get('buildingList', [])
+    if not building_list:
+        return []
+
+    # 尝试从关键词中提取楼栋信息
+    keyword_lower = keyword.lower()
+    converted_keyword = convert_chinese_numbers(keyword).lower()
+
+    candidates = []
+    target_building_names = set()
+
+    # 首先尝试找出用户可能想找的楼栋
+    for building in building_list:
+        building_name = building.get('name', '').lower()
+        if building_name in keyword_lower or building_name in converted_keyword:
+            target_building_names.add(building.get('name', ''))
+
+    # 如果找到了目标楼栋，只收集该楼栋下的房屋
+    if target_building_names:
+        for building in building_list:
+            building_name = building.get('name', '')
+            if building_name not in target_building_names:
+                continue
+
+            unit_list = building.get('unitList', [])
+            for unit in unit_list:
+                unit_name = unit.get('name', '')
+                house_list = unit.get('houseList', [])
+                for house in house_list:
+                    house_name = house.get('name', '')
+                    full_path = f"{building_name}/{unit_name}/{house_name}"
+                    candidates.append(full_path)
+                    if len(candidates) >= max_candidates:
+                        return candidates
+    else:
+        # 如果没有找到明确的楼栋，收集一些示例房屋
+        for building in building_list:
+            building_name = building.get('name', '')
+            unit_list = building.get('unitList', [])
+            for unit in unit_list:
+                unit_name = unit.get('name', '')
+                house_list = unit.get('houseList', [])
+                for house in house_list:
+                    house_name = house.get('name', '')
+                    full_path = f"{building_name}/{unit_name}/{house_name}"
+                    candidates.append(full_path)
+                    if len(candidates) >= max_candidates:
+                        return candidates
+
+    return candidates
+
+
+def print_candidates(keyword: str, candidates: list):
+    """
+    打印候选列表格式输出
+
+    Args:
+        keyword: 用户原始查询关键词
+        candidates: 候选房屋列表
+    """
+    print("CANDIDATES:")
+    print(f"用户查询: {keyword}")
+    print("候选列表:")
+    for idx, candidate in enumerate(candidates, 1):
+        print(f"{idx}. {candidate}")
+    print("提示: 未找到精确匹配，请从以上候选中选择，或使用完整路径如\"1栋/1单元/103\"")
 
 
 def format_household_arrears_result(raw_response, node_name: str, community_name: str = None) -> str:
@@ -2341,7 +2531,18 @@ def get_household_arrears_by_name(charge_system_name=None, community_name=None, 
         matching_nodes = find_matching_nodes(household_data, clean_keyword)
 
     if not matching_nodes:
-        print(f"未找到与'{clean_keyword}'匹配的楼栋/单元/房屋，请确认输入是否正确")
+        # 尝试宽松匹配
+        logger.info(f"严格匹配未找到，尝试宽松匹配: {clean_keyword}")
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, relaxed_match=True)
+
+    if not matching_nodes:
+        # 仍然没找到，生成候选列表
+        logger.info(f"宽松匹配也未找到，生成候选列表")
+        candidates = generate_candidates(household_data, clean_keyword)
+        if candidates:
+            print_candidates(clean_keyword, candidates)
+        else:
+            print(f"未找到与'{clean_keyword}'匹配的楼栋/单元/房屋，请确认输入是否正确")
         return
 
     if len(matching_nodes) == 1:
@@ -3076,7 +3277,18 @@ def do_meter_reading_by_name(charge_system_name=None, community_name=None, keywo
         matching_nodes = find_matching_nodes(household_data, clean_keyword)
 
     if not matching_nodes:
-        print(f"未找到与'{clean_keyword}'匹配的楼栋/单元/房屋，请确认输入是否正确")
+        # 尝试宽松匹配
+        logger.info(f"严格匹配未找到，尝试宽松匹配: {clean_keyword}")
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, relaxed_match=True)
+
+    if not matching_nodes:
+        # 仍然没找到，生成候选列表
+        logger.info(f"宽松匹配也未找到，生成候选列表")
+        candidates = generate_candidates(household_data, clean_keyword)
+        if candidates:
+            print_candidates(clean_keyword, candidates)
+        else:
+            print(f"未找到与'{clean_keyword}'匹配的楼栋/单元/房屋，请确认输入是否正确")
         return
 
     if len(matching_nodes) == 1:
@@ -3226,7 +3438,18 @@ def get_meter_status_by_name(charge_system_name=None, community_name=None, keywo
         matching_nodes = find_matching_nodes(household_data, clean_keyword)
 
     if not matching_nodes:
-        print(f"未找到与'{clean_keyword}'匹配的楼栋/单元/房屋，请确认输入是否正确")
+        # 尝试宽松匹配
+        logger.info(f"严格匹配未找到，尝试宽松匹配: {clean_keyword}")
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, relaxed_match=True)
+
+    if not matching_nodes:
+        # 仍然没找到，生成候选列表
+        logger.info(f"宽松匹配也未找到，生成候选列表")
+        candidates = generate_candidates(household_data, clean_keyword)
+        if candidates:
+            print_candidates(clean_keyword, candidates)
+        else:
+            print(f"未找到与'{clean_keyword}'匹配的楼栋/单元/房屋，请确认输入是否正确")
         return
 
     if len(matching_nodes) == 1:
