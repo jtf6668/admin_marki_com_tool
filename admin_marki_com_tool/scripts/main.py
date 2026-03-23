@@ -2828,6 +2828,56 @@ def get_meter_list(community_id: str, house_id: str) -> dict:
         return None
 
 
+def get_meter_status(community_id: str, meter_id: str) -> dict:
+    """
+    获取指定仪器的状态（包括上期读数）
+
+    Args:
+        community_id: 小区ID
+        meter_id: 仪器ID
+
+    Returns:
+        API响应数据字典
+    """
+    import random
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+
+    params = {
+        "id": meter_id,
+        "r": random.random()
+    }
+
+    try:
+        response = requests.get(
+            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/getMeterStatus",
+            params=params,
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"获取仪器状态失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            return None
+
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get('code') != 0:
+            logger.error(f"获取仪器状态失败: {data.get('msg')}")
+            return None
+
+        logger.info(f"成功获取仪器 {meter_id} 的状态")
+        return data
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"获取仪器状态发生异常: {e}")
+        return None
+
+
 def submit_meter_reading(community_id: str, meter_id: str, meter_type: int, cur_set_reading: float, remark: str = "") -> dict:
     """
     提交抄表数据
@@ -3047,6 +3097,156 @@ def do_meter_reading_by_name(charge_system_name=None, community_name=None, keywo
             print(f"{idx}. {node['name']} ({level_label})")
 
 
+def get_meter_status_by_name(charge_system_name=None, community_name=None, keyword=None, meter_type_str=None):
+    """
+    智能查询上期读数入口函数，处理整个查询流程
+
+    Args:
+        charge_system_name: 收费系统名称
+        community_name: 小区名称
+        keyword: 房屋位置关键词
+        meter_type_str: 仪器类型（"水表"或"电表"）
+    """
+    # 检查必要参数
+    if not charge_system_name:
+        print("NEED_INFO: 请提供收费系统名称")
+        print("提示：可以先使用 list_charge_systems 命令查看可用的收费系统")
+        return
+
+    if not community_name:
+        print("NEED_INFO: 请提供小区名称")
+        return
+
+    if not keyword:
+        print("NEED_INFO: 请提供房屋位置关键词（如楼栋/单元/房屋号）")
+        return
+
+    if not meter_type_str:
+        print("NEED_INFO: 请提供仪器类型（水表或电表）")
+        return
+
+    # 转换仪器类型
+    meter_type_str = meter_type_str.strip()
+    if meter_type_str in ["水表", "水"]:
+        meter_type = 1
+        meter_type_label = "水表"
+    elif meter_type_str in ["电表", "电"]:
+        meter_type = 2
+        meter_type_label = "电表"
+    else:
+        print(f"未知的仪器类型：{meter_type_str}，请使用'水表'或'电表'")
+        return
+
+    # 获取收费系统映射
+    system_map = get_user_charge_systems(return_map=True)
+    if not system_map:
+        print("获取收费系统列表失败")
+        return
+
+    # 查找收费系统 ID
+    charge_system_id = system_map.get(charge_system_name)
+    if not charge_system_id:
+        print(f"未找到收费系统：{charge_system_name}")
+        print("可用的收费系统：" + ", ".join(system_map.keys()))
+        return
+
+    # 搜索小区
+    community_map = search_community(charge_system_id, community_name, return_map=True)
+    if community_map is None:
+        print("搜索小区失败")
+        return
+
+    if not community_map:
+        print(f"未找到匹配的小区：{community_name}")
+        return
+
+    if len(community_map) > 1:
+        # 多个匹配，列出供用户选择
+        print(f"找到多个匹配的小区，请使用完整的小区名称重新查询：")
+        for name in community_map.keys():
+            print(f"  - {name}")
+        return
+
+    # 只有一个匹配，继续处理
+    comm_name, comm_id = next(iter(community_map.items()))
+    print(f"找到小区：{comm_name}")
+
+    # 先尝试从缓存加载上一次的匹配列表
+    cache_data = load_match_cache()
+    if cache_data and str(cache_data.get('community_id')) == str(comm_id):
+        cached_nodes = cache_data.get('nodes', [])
+        if cached_nodes:
+            # 尝试解析用户选择
+            selected_node = parse_user_selection(keyword, cached_nodes)
+            if selected_node:
+                logger.info(f"用户选择了: {selected_node.get('name')}")
+                # 清除缓存
+                clear_match_cache()
+                # 检查是否是房屋级别
+                if selected_node['level'] != 'house':
+                    print(f"请选择具体的房屋进行查询，当前选择的是{selected_node['name']}（{selected_node['level']}）")
+                    return
+                # 继续处理查询
+                return _process_get_meter_status(str(comm_id), selected_node, meter_type, meter_type_label, comm_name)
+            else:
+                # 解析失败，清除缓存，按新关键词重新搜索
+                logger.info("无法解析用户选择，清除缓存并重新搜索")
+                clear_match_cache()
+
+    # 清理关键词
+    clean_keyword = keyword.replace("上期读数", "").replace("读数", "").replace("的", "").strip()
+
+    # 检查是否使用精确匹配
+    use_exact_match = "/" in clean_keyword
+
+    # 获取完整房屋结构
+    household_data = search_household_structure(str(comm_id), "")
+
+    if household_data is None:
+        print("搜索房屋结构失败")
+        return
+
+    # 找出匹配的节点
+    if use_exact_match:
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, exact_match=True)
+        if not matching_nodes:
+            logger.info("精确匹配未找到结果，使用模糊匹配")
+            keywords = clean_keyword.split("/")
+            search_kw = keywords[-1] if keywords else clean_keyword
+            household_data_for_search = search_household_structure(str(comm_id), search_kw)
+            if household_data_for_search:
+                household_data = household_data_for_search
+            matching_nodes = find_matching_nodes(household_data, clean_keyword)
+    else:
+        keywords = split_keywords(clean_keyword)
+        search_kw = keywords[-1] if keywords else clean_keyword
+        household_data_for_search = search_household_structure(str(comm_id), search_kw)
+        if household_data_for_search:
+            household_data = household_data_for_search
+        matching_nodes = find_matching_nodes(household_data, clean_keyword)
+
+    if not matching_nodes:
+        print(f"未找到与'{clean_keyword}'匹配的楼栋/单元/房屋，请确认输入是否正确")
+        return
+
+    if len(matching_nodes) == 1:
+        node = matching_nodes[0]
+        if node['level'] != 'house':
+            print(f"请选择具体的房屋进行查询，当前选择的是{node['name']}（{node['level']}）")
+            return
+        return _process_get_meter_status(str(comm_id), node, meter_type, meter_type_label, comm_name)
+    else:
+        save_match_cache(comm_id, matching_nodes)
+        print("MULTI_MATCH:")
+        for idx, node in enumerate(matching_nodes, 1):
+            level_label = {
+                'building': '楼栋',
+                'unit': '单元',
+                'house': '房屋'
+            }.get(node['level'], '未知')
+            print(f"{idx}. {node['name']} ({level_label})")
+
+
 def _process_meter_reading(community_id: str, house_node: dict, meter_type: int, meter_type_label: str, reading: float, remark: str, community_name: str):
     """
     内部函数：处理抄表流程
@@ -3114,6 +3314,74 @@ def _process_meter_reading(community_id: str, house_node: dict, meter_type: int,
     print(f"**本期读数**: {reading}")
     if remark:
         print(f"**备注**: {remark}")
+
+
+def _process_get_meter_status(community_id: str, house_node: dict, meter_type: int, meter_type_label: str, community_name: str):
+    """
+    内部函数：处理获取上期读数流程
+
+    Args:
+        community_id: 小区ID
+        house_node: 房屋节点
+        meter_type: 仪器类型
+        meter_type_label: 仪器类型标签
+        community_name: 小区名称
+    """
+    house_id = house_node['id']
+    house_name = house_node['name']
+
+    print(f"找到房屋：{house_name}")
+
+    # 获取仪器列表
+    meter_list_data = get_meter_list(community_id, str(house_id))
+    if not meter_list_data:
+        print("获取仪器列表失败")
+        return
+
+    meter_list = meter_list_data.get('data', {}).get('list', [])
+    if not meter_list:
+        print(f"该房屋未找到任何仪器")
+        return
+
+    # 筛选对应类型的仪器
+    matching_meters = [m for m in meter_list if m.get('type') == meter_type]
+    if not matching_meters:
+        print(f"该房屋未找到{meter_type_label}")
+        # 列出所有可用仪器
+        print("可用的仪器：")
+        for m in meter_list:
+            mt_label = "水表" if m.get('type') == 1 else "电表"
+            print(f"  - {m.get('name', '未知')} ({mt_label})")
+        return
+
+    if len(matching_meters) > 1:
+        print(f"找到多个{meter_type_label}，请选择：")
+        for idx, m in enumerate(matching_meters, 1):
+            print(f"{idx}. {m.get('name', '未知')}")
+        return
+
+    # 只有一个匹配的仪器，获取上期读数
+    meter = matching_meters[0]
+    meter_id = meter.get('id')
+    meter_name = meter.get('name', '未知')
+
+    print(f"找到{meter_type_label}：{meter_name}")
+
+    # 获取仪器状态（上期读数）
+    result = get_meter_status(community_id, meter_id)
+    if not result:
+        print("获取上期读数失败")
+        return
+
+    data = result.get('data', {})
+    now_num = data.get('nowNum', '未知')
+
+    print("### 查询成功\n")
+    print(f"**小区名称**: {community_name}")
+    print(f"**房屋位置**: {house_name}")
+    print(f"**仪器类型**: {meter_type_label}")
+    print(f"**仪器名称**: {meter_name}")
+    print(f"**上期读数**: {now_num}")
 
 
 def logout() -> str:
@@ -3353,6 +3621,18 @@ if __name__ == "__main__":
             reading = sys.argv[6]
             remark = sys.argv[7] if len(sys.argv) > 7 else ""
             do_meter_reading_by_name(charge_system_name, community_name, keyword, meter_type_str, reading, remark)
+    elif command == "get_meter_status":
+        # 智能查询上期读数入口
+        if len(sys.argv) < 6:
+            print("错误：请提供收费系统名称、小区名称、房屋关键词和仪器类型")
+            print("用法: python3 main.py get_meter_status <收费系统名称> <小区名称> <房屋关键词> <仪器类型>")
+            print("仪器类型: 水表 或 电表")
+        else:
+            charge_system_name = sys.argv[2]
+            community_name = sys.argv[3]
+            keyword = sys.argv[4]
+            meter_type_str = sys.argv[5]
+            get_meter_status_by_name(charge_system_name, community_name, keyword, meter_type_str)
     elif command == "send_community_wechat_reminder":
         # 通过小区ID发送微信缴费提醒（旧版）
         if len(sys.argv) < 3:
@@ -3397,6 +3677,7 @@ if __name__ == "__main__":
         print("  get_current_user_info <收费系统名称> <小区名称> - 查询当前登录用户完整信息")
         print("  send_wechat_reminder <收费系统名称> <小区名称> - 发送微信缴费提醒（推荐）")
         print("  meter_reading <收费系统名称> <小区名称> <房屋关键词> <仪器类型> <读数> [备注] - 智能抄表入口")
+        print("  get_meter_status <收费系统名称> <小区名称> <房屋关键词> <仪器类型> - 查询电表/水表上期读数")
         print("  send_community_wechat_reminder <小区ID> - 通过小区ID发送微信缴费提醒")
         print("  get_community_total_arrears <小区ID> - 通过ID查询欠费（旧版）")
         print("  get_community_current_year_arrears <小区ID> - 通过ID查询本年度物业费欠费")
