@@ -958,19 +958,27 @@ def get_deal_log(community_id: str, start_time: int, end_time: int) -> dict:
         return None
 
 
-def format_today_stats(community_name: str, deal_data: dict) -> str:
+def format_today_stats(community_name: str, deal_data: dict, start_dt: datetime = None, end_dt: datetime = None) -> str:
     """
-    格式化今日统计数据
+    格式化统计数据
 
     Args:
         community_name: 小区名称
         deal_data: 交易数据
+        start_dt: 开始时间（可选，不传则表示今日）
+        end_dt: 结束时间（可选，不传则表示今日）
 
     Returns:
         格式化后的统计文本
     """
-    today_str = datetime.now().strftime("%Y年%m月%d日")
-    output = [f"### {community_name} {today_str} 收入统计\n"]
+    if start_dt and end_dt:
+        if start_dt.date() == end_dt.date():
+            date_str = start_dt.strftime("%Y年%m月%d日")
+        else:
+            date_str = f"{start_dt.strftime('%Y年%m月%d日')} 至 {end_dt.strftime('%Y年%m月%d日')}"
+    else:
+        date_str = datetime.now().strftime("%Y年%m月%d日")
+    output = [f"### {community_name} {date_str} 收入统计\n"]
 
     list_data = deal_data.get('list', [])
 
@@ -1130,6 +1138,113 @@ def get_today_stats(charge_system_name=None, community_name=None):
         comm_name, comm_id = next(iter(community_map.items()))
         print(f"找到小区：{comm_name}")
         get_community_today_stats(str(comm_id), comm_name)
+    else:
+        # 多个匹配，列出供用户选择
+        print(f"找到多个匹配的小区，请使用完整的小区名称重新查询：")
+        for name in community_map.keys():
+            print(f"  - {name}")
+
+
+def get_community_custom_range_stats(community_id: str, start_time: int, end_time: int, community_name: str = None) -> str:
+    """
+    获取小区自定义时间范围的收入统计
+
+    Args:
+        community_id: 小区ID
+        start_time: 开始时间戳
+        end_time: 结束时间戳
+        community_name: 小区名称（可选）
+
+    Returns:
+        统计结果文本
+    """
+    deal_data = get_deal_log(community_id, start_time, end_time)
+
+    if deal_data is None:
+        return "获取交易记录失败"
+
+    if not community_name:
+        community_name = "该小区"
+
+    start_dt = datetime.fromtimestamp(start_time)
+    end_dt = datetime.fromtimestamp(end_time)
+
+    output = format_today_stats(community_name, deal_data, start_dt, end_dt)
+    logger.info(f"成功获取小区 {community_id} 的自定义时间范围收入统计")
+    print(f"返回数据：{output}")
+    return output
+
+
+def get_custom_range_stats(charge_system_name=None, community_name=None, start_date_str=None, end_date_str=None):
+    """
+    通过名称和自定义日期范围查询收入统计（智能模式）
+
+    Args:
+        charge_system_name: 收费系统名称
+        community_name: 小区名称
+        start_date_str: 开始日期 (YYYY-MM-DD 格式)
+        end_date_str: 结束日期 (YYYY-MM-DD 格式)
+    """
+    # 检查必要参数
+    if not charge_system_name:
+        print("NEED_INFO: 请提供收费系统名称")
+        print("提示：可以先使用 list_charge_systems 命令查看可用的收费系统")
+        return
+
+    if not community_name:
+        print("NEED_INFO: 请提供小区名称")
+        return
+
+    if not start_date_str or not end_date_str:
+        print("NEED_INFO: 请提供开始日期和结束日期")
+        print("日期格式: YYYY-MM-DD")
+        print("示例: python3 main.py get_custom_range_stats <收费系统> <小区> 2025-01-01 2026-12-31")
+        return
+
+    # 解析日期
+    try:
+        start_dt = parse_iso_date(start_date_str)
+        end_dt = parse_iso_date(end_date_str)
+        # 设置结束时间为当天的 23:59:59
+        end_dt = datetime(end_dt.year, end_dt.month, end_dt.day, 23, 59, 59)
+    except ValueError as e:
+        print(f"日期解析失败：{e}")
+        print("请使用 YYYY-MM-DD 格式，例如：2025-01-01")
+        return
+
+    # 转换为时间戳
+    start_time = int(start_dt.timestamp())
+    end_time = int(end_dt.timestamp())
+
+    # 获取收费系统映射
+    system_map = get_user_charge_systems(return_map=True)
+    if not system_map:
+        print("获取收费系统列表失败")
+        return
+
+    # 查找收费系统 ID
+    charge_system_id = system_map.get(charge_system_name)
+    if not charge_system_id:
+        print(f"未找到收费系统：{charge_system_name}")
+        print("可用的收费系统：" + ", ".join(system_map.keys()))
+        return
+
+    # 搜索小区
+    community_map = search_community(charge_system_id, community_name, return_map=True)
+    if community_map is None:
+        print("搜索小区失败")
+        return
+
+    if not community_map:
+        print(f"未找到匹配的小区：{community_name}")
+        return
+
+    if len(community_map) == 1:
+        # 只有一个匹配，直接查询
+        comm_name, comm_id = next(iter(community_map.items()))
+        print(f"找到小区：{comm_name}")
+        print(f"查询时间范围：{start_dt.strftime('%Y年%m月%d日')} 至 {end_dt.strftime('%Y年%m月%d日')}")
+        get_community_custom_range_stats(str(comm_id), start_time, end_time, comm_name)
     else:
         # 多个匹配，列出供用户选择
         print(f"找到多个匹配的小区，请使用完整的小区名称重新查询：")
@@ -2727,6 +2842,19 @@ if __name__ == "__main__":
             start_date_str = sys.argv[4]
             end_date_str = sys.argv[5]
             get_custom_range_arrears(charge_system_name, community_name, start_date_str, end_date_str)
+    elif command == "get_custom_range_stats":
+        # 查询小区自定义时间范围收入统计
+        if len(sys.argv) < 6:
+            print("错误：请提供收费系统名称、小区名称、开始日期和结束日期")
+            print("用法: python3 main.py get_custom_range_stats <收费系统名称> <小区名称> <开始日期> <结束日期>")
+            print("日期格式: YYYY-MM-DD")
+            print("示例: python3 main.py get_custom_range_stats <收费系统> <小区> 2025-01-01 2026-12-31")
+        else:
+            charge_system_name = sys.argv[2]
+            community_name = sys.argv[3]
+            start_date_str = sys.argv[4]
+            end_date_str = sys.argv[5]
+            get_custom_range_stats(charge_system_name, community_name, start_date_str, end_date_str)
     elif command == "_get_charge_system_map":
         # 内部命令：返回 JSON 格式的收费系统映射
         system_map = get_user_charge_systems(return_map=True)
@@ -2773,6 +2901,16 @@ if __name__ == "__main__":
         else:
             community_id = sys.argv[2]
             get_community_today_stats(community_id)
+    elif command == "get_community_custom_range_stats":
+        # 通过小区ID查询自定义时间范围收入统计
+        if len(sys.argv) < 5:
+            print("错误：请提供小区ID、开始时间戳和结束时间戳")
+            print("用法: python3 main.py get_community_custom_range_stats <小区ID> <开始时间戳> <结束时间戳>")
+        else:
+            community_id = sys.argv[2]
+            start_time = int(sys.argv[3])
+            end_time = int(sys.argv[4])
+            get_community_custom_range_stats(community_id, start_time, end_time)
     elif command == "get_monthly_expense":
         # 查询小区本月支出统计
         if len(sys.argv) < 4:
@@ -2893,6 +3031,7 @@ if __name__ == "__main__":
         print("  get_current_year_arrears <收费系统名称> <小区名称> - 通过名称查询本年度物业费欠费")
         print("  get_custom_range_arrears <收费系统名称> <小区名称> <开始日期> <结束日期> - 自定义时间范围查询欠费")
         print("  get_today_stats <收费系统名称> <小区名称> - 查询小区今日收入统计")
+        print("  get_custom_range_stats <收费系统名称> <小区名称> <开始日期> <结束日期> - 查询小区自定义时间范围收入统计")
         print("  get_monthly_expense <收费系统名称> <小区名称> - 查询小区本月支出统计")
         print("  get_collection_rate <收费系统名称> <小区名称> - 查询小区本月收缴率统计")
         print("  get_arrear_households <收费系统名称> <小区名称> - 查询小区欠费户数统计")
@@ -2904,6 +3043,7 @@ if __name__ == "__main__":
         print("  get_community_total_arrears <小区ID> - 通过ID查询欠费（旧版）")
         print("  get_community_current_year_arrears <小区ID> - 通过ID查询本年度物业费欠费")
         print("  get_community_today_stats <小区ID> - 通过ID查询今日收入统计")
+        print("  get_community_custom_range_stats <小区ID> <开始时间戳> <结束时间戳> - 通过ID查询自定义时间范围收入统计")
         print("  get_community_monthly_expense <小区ID> - 通过ID查询本月支出统计")
         print("  get_community_collection_rate <小区ID> <收费系统ID> - 通过ID查询本月收缴率统计")
         print("  get_community_arrear_households <小区ID> - 通过ID查询欠费户数统计")
