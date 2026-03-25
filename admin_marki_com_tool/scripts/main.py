@@ -602,13 +602,20 @@ def get_property_charge_item_id(community_id: str, charge_system_id: str) -> str
             if '物业' in item_name
         ]
 
-        if len(property_candidates) == 1:
-            # 只有一个匹配，直接返回
-            item_id, item_name = property_candidates[0]
-            logger.info(f"[模糊匹配] 找到物业费项目: {item_name} (ID: {item_id})")
-            print(f"✓ 模糊匹配找到物业费项目：{item_name} (ID: {item_id})")
-            return item_id
-        elif len(property_candidates) > 1:
+        if len(property_candidates) >= 1:
+            # 展示所有找到的含"物业"的候选项目
+            candidate_names = [name for _, name in property_candidates]
+            print(f"ℹ 找到 {len(property_candidates)} 个含'物业'的收费项目：{', '.join(candidate_names)}")
+
+            if len(property_candidates) == 1:
+                # 只有一个匹配，直接返回
+                item_id, item_name = property_candidates[0]
+                logger.info(f"[模糊匹配] 找到物业费项目: {item_name} (ID: {item_id})")
+                print(f"✓ 只有一个匹配，直接使用：{item_name} (ID: {item_id})")
+                return item_id
+            else:
+                # 多个匹配，LLM识别判断哪个最可能是物业费
+                logger.info(f"[LLM识别] 找到多个包含'物业'的项目，共 {len(property_candidates)} 个，进行智能识别")
             # 多个匹配，LLM识别判断哪个最可能是物业费
             logger.info(f"[LLM识别] 找到多个包含'物业'的项目，共 {len(property_candidates)} 个，进行智能识别")
             candidate_names = [name for _, name in property_candidates]
@@ -2627,6 +2634,7 @@ def get_household_arrears_by_name(charge_system_name=None, community_name=None, 
                 logger.info(f"用户选择了: {selected_node.get('name')}")
                 # 清除缓存，使用选中的节点查询欠费
                 clear_match_cache()
+                print(f"✓ 已选择：{selected_node['name']}")
                 get_household_arrears(str(comm_id), selected_node['id'], selected_node['id_type'], selected_node['name'], comm_name)
                 return
             else:
@@ -2648,9 +2656,13 @@ def get_household_arrears_by_name(charge_system_name=None, community_name=None, 
         return
 
     # 找出匹配的节点
+    is_exact_match = False
+    is_relaxed_match = False
     if use_exact_match:
         # 先尝试精确匹配
         matching_nodes = find_matching_nodes(household_data, clean_keyword, exact_match=True)
+        if matching_nodes:
+            is_exact_match = True
         if not matching_nodes:
             # 精确匹配失败，降级到模糊匹配
             logger.info("精确匹配未找到结果，使用模糊匹配")
@@ -2675,6 +2687,8 @@ def get_household_arrears_by_name(charge_system_name=None, community_name=None, 
         # 尝试宽松匹配
         logger.info(f"严格匹配未找到，尝试宽松匹配: {clean_keyword}")
         matching_nodes = find_matching_nodes(household_data, clean_keyword, relaxed_match=True)
+        if matching_nodes:
+            is_relaxed_match = True
 
     if not matching_nodes:
         # 仍然没找到，生成候选列表
@@ -2687,8 +2701,14 @@ def get_household_arrears_by_name(charge_system_name=None, community_name=None, 
         return
 
     if len(matching_nodes) == 1:
-        # 只有一个匹配，直接查询欠费
+        # 只有一个匹配，输出匹配信息后查询欠费
         node = matching_nodes[0]
+        if is_exact_match:
+            print(f"✓  找到：{node['name']}")
+        elif is_relaxed_match:
+            print(f"🤖 找到：{node['name']}")
+        else:
+            print(f"🔍 找到：{node['name']}")
         get_household_arrears(str(comm_id), node['id'], node['id_type'], node['name'], comm_name)
     else:
         # 多个匹配，保存到缓存并列出供用户选择
