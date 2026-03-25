@@ -4880,7 +4880,7 @@ def collect_house_bills(community_id: str, asset_id: str, asset_type: int, node_
                     'version': record.get('version', 0),
                     'chargeItemName': record.get('chargeItemName', '未知收费项目'),
                     'date': record.get('date', ''),
-                    'amount': record.get('amount', 0),  # 单位：分
+                    'amount': record.get('billAmount', 0),  # 单位：分，使用 billAmount 字段
                 })
 
     if not bill_list:
