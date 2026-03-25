@@ -11,6 +11,8 @@
 | 通过名称查询自定义时间范围欠费 | `python3 {baseDir}/scripts/main.py get_custom_range_arrears <收费系统名称> <小区名称> <开始日期> <结束日期>` |
 | 查询小区欠费户数统计 | `python3 {baseDir}/scripts/main.py get_arrear_households <收费系统名称> <小区名称>` |
 | 查询房屋/楼栋/单元欠费总额 | `python3 {baseDir}/scripts/main.py get_household_arrears <收费系统名称> <小区名称> <关键词>` |
+| 查询特定房屋指定时间范围和费用类型欠费 | `python3 {baseDir}/scripts/main.py get_household_specific_arrears <收费系统名称> <小区名称> <房屋关键词> <开始日期> <结束日期> <费用类型>` |
+| 查询特定房屋指定费用类型欠费（不限时间） | `python3 {baseDir}/scripts/main.py get_household_fee_type_arrears <收费系统名称> <小区名称> <房屋关键词> <费用类型>` |
 | 通过小区ID查询欠费总额（旧版） | `python3 {baseDir}/scripts/main.py get_community_total_arrears <小区ID>` |
 | 通过小区ID查询本年度物业费欠费 | `python3 {baseDir}/scripts/main.py get_community_current_year_arrears <小区ID>` |
 | 通过小区ID查询自定义时间范围欠费 | `python3 {baseDir}/scripts/main.py get_community_custom_range_arrears <小区ID> <开始时间戳> <结束时间戳>` |
@@ -177,3 +179,46 @@ CANDIDATES:
 **中文数字支持**：
 - 用户可能使用中文数字输入（如"一栋一单元103"），系统会自动转换为阿拉伯数字进行匹配
 - 当看到用户使用中文数字时，优先选择对应阿拉伯数字的候选
+
+---
+
+### 情况 12：用户查询特定房间指定费用类型和/或时间范围欠费
+
+**用户示例**：
+- "1栋/1单元/101的物业费欠费金额多少"
+- "1栋/1单元/101在2025 年 1 月 —2026 年 12 月水费欠费多少"
+- "1栋/1单元/101本期物业费金额是多少"
+- "1栋/1单元/101往期电费欠费多少"
+- "查询1栋1单元101室的燃气费欠费"
+
+**处理步骤**：
+1. 确认小区信息（如不完整，按现有逻辑询问用户）
+2. 提取以下信息：
+   - **房屋信息**：用户提供的房屋/楼栋/单元关键词
+   - **时间范围**：如果用户指定了时间范围，解析转换为 `YYYY-MM-DD` 格式
+   - **费用类型**：提取用户询问的费用类型（物业费、水费、电费、燃气费等）
+3. 根据信息完整程度调用对应命令：
+   - 如果**时间范围完整且费用类型明确**：调用
+     ```
+     python3 {baseDir}/scripts/main.py get_household_specific_arrears <收费系统名称> <小区名称> <房屋关键词> <开始日期> <结束日期> <费用类型>
+     ```
+   - 如果**只指定了费用类型但不限制时间范围**：调用
+     ```
+     python3 {baseDir}/scripts/main.py get_household_fee_type_arrears <收费系统名称> <小区名称> <房屋关键词> <费用类型>
+     ```
+4. 如果匹配到多个房屋，按照现有的多候选处理流程处理
+5. 展示最终结果给用户，结果中已包含过滤条件说明
+
+**支持的费用类型**：
+- `物业费` - 物业管理相关费用
+- `水费` - 自来水费用
+- `电费` - 电力费用
+- `燃气费` - 天然气/煤气费用
+- 如果用户提到其他费用类型，也会尝试智能匹配
+
+**日期处理规则**：
+- 同自定义时间范围查询规则，AI负责将任意自然语言日期格式转换为 `YYYY-MM-DD`
+- "本期"、"当期" → 当前月份（开始：当月1日，结束：当前日期）
+- "往期" → 本月之前的账期
+- "本年度" → 今年1月1日到今天
+- "上期" → 上个计费周期（通常是上个月）

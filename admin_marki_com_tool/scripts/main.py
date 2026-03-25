@@ -660,7 +660,160 @@ def get_property_charge_item_id(community_id: str, charge_system_id: str) -> Opt
         return None
 
 
+def get_charge_item_id_by_name(community_id: str, charge_system_id: str, fee_type: str) -> Optional[str]:
+    """
+    根据费用类型名称获取收费项目ID。
+
+    支持的费用类型：物业费、水费、电费、燃气费
+
+    Args:
+        community_id: 小区ID
+        charge_system_id: 收费系统ID
+        fee_type: 费用类型名称（物业费、水费、电费、燃气费）
+
+    Returns:
+        收费项目ID，如果找不到返回 None
+    """
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+
+    request_body = {
+        "index": "",
+        "communityID": int(community_id),
+        "pageSize": 40,
+        "kw": "",
+        "idList": [],
+        "itemType": 57
+    }
+
+    try:
+        response = requests.post(
+            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/getCommunityItemList",
+            json=request_body,
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"获取收费项目列表失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            return None
+
+        data = response.json()
+        if data.get('code') != 0:
+            logger.error(f"获取收费项目列表失败，错误信息: {data.get('msg')}")
+            return None
+
+        items = data.get('data', {}).get('list', [])
+        if not items:
+            logger.warning(f"小区 {community_id} 未找到任何收费项目")
+            print(f"⚠ 小区未找到任何收费项目")
+            return None
+
+        # 提取所有项目的 id 和 name
+        item_list = [(str(item['id']), item['name']) for item in items if 'id' in item and 'name' in item]
+
+        # 根据费用类型定义匹配规则
+        match_rules = {
+            '物业费': {
+                'exact': ["物业费", "物业管理费", "物业服务费"],
+                'fuzzy_keywords': ["物业"]
+            },
+            '水费': {
+                'exact': ["水费", "自来水费", "水资源费"],
+                'fuzzy_keywords': ["水"]
+            },
+            '电费': {
+                'exact': ["电费", "公共电费", "公摊电费"],
+                'fuzzy_keywords': ["电"]
+            },
+            '燃气费': {
+                'exact': ["燃气费", "煤气费", "天然气费"],
+                'fuzzy_keywords': ["燃气", "煤气"]
+            }
+        }
+
+        rule = match_rules.get(fee_type)
+        if not rule:
+            # 如果不是预定义的类型，尝试直接模糊匹配
+            logger.info(f"未预定义费用类型 '{fee_type}'，尝试直接模糊匹配")
+            rule = {
+                'exact': [fee_type],
+                'fuzzy_keywords': [fee_type]
+            }
+
+        # 第一步：精确匹配
+        for exact_name in rule['exact']:
+            for item_id, item_name in item_list:
+                if item_name == exact_name:
+                    logger.info(f"[精确匹配] 找到{fee_type}项目: {item_name} (ID: {item_id})")
+                    print(f"✓ 精确匹配找到{fee_type}项目：{item_name} (ID: {item_id})")
+                    return item_id
+
+        # 第二步：模糊匹配（包含关键词）
+        fuzzy_candidates = []
+        for item_id, item_name in item_list:
+            for kw in rule['fuzzy_keywords']:
+                if kw in item_name:
+                    fuzzy_candidates.append((item_id, item_name))
+                    break
+
+        if not fuzzy_candidates:
+            logger.warning(f"小区 {community_id} 未找到{fee_type}收费项目，所有项目: {[name for _, name in item_list]}")
+            print(f"⚠ 未找到{fee_type}收费项目，所有收费项目：{', '.join([name for _, name in item_list])}")
+            print(f"⚠ 将返回所有费用类型的欠费总额")
+            return None
+
+        if len(fuzzy_candidates) == 1:
+            # 只有一个匹配，直接返回
+            item_id, item_name = fuzzy_candidates[0]
+            logger.info(f"[模糊匹配] 找到{fee_type}项目: {item_name} (ID: {item_id})")
+            print(f"✓ 只有一个匹配，直接使用：{item_name} (ID: {item_id})")
+            return item_id
+        else:
+            # 多个匹配，评分排序选择最佳
+            candidate_names = [name for _, name in fuzzy_candidates]
+            print(f"ℹ 找到 {len(fuzzy_candidates)} 个含{fee_type}的收费项目：{', '.join(candidate_names)}")
+
+            # 评分规则：精确匹配完整费用类型得分最高，越短越好
+            scored_candidates = []
+            for item_id, name in fuzzy_candidates:
+                score = 0
+                if name == fee_type:
+                    score = 100
+                elif any(kw in name for kw in rule['exact']):
+                    score = 90
+                elif any(kw in name for kw in rule['fuzzy_keywords']):
+                    score = 70 - len(name)  # 越短得分越高
+                scored_candidates.append((-score, item_id, name))  # 负号用于升序排序
+
+            scored_candidates.sort()
+            best_score = -scored_candidates[0][0]
+            best_item_id = scored_candidates[0][1]
+            best_name = scored_candidates[0][2]
+
+            logger.info(f"[智能识别] 选择：{best_name} (ID: {best_item_id})，置信度得分：{best_score}")
+            print(f"🤖 智能识别判断：最可能是{fee_type}的项目是【{best_name}】(ID: {best_item_id})，置信度得分 {best_score}/100")
+            print(f"✓ 已使用智能选择的项目进行过滤")
+            return best_item_id
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"调用getCommunityItemList接口发生异常: {e}")
+        return None
+
+
 def get_community_total_arrears(community_id: str, start_time: int = None, end_time: int = None, charge_system_id: str = None) -> str:
+    """
+    获取小区欠费总额。
+
+    Args:
+        community_id: 小区ID
+        start_time: 开始时间戳（可选）
+        end_time: 结束时间戳（可选）
+        charge_system_id: 收费系统ID（可选，用于获取物业费项目ID）
+    """
     """
     获取小区欠费总额。
 
@@ -2514,6 +2667,56 @@ def format_household_arrears_result(raw_response, node_name: str, community_name
     return "\n".join(output)
 
 
+def format_household_specific_arrears_result(raw_response, node_name: str, community_name: str = None, start_time: int = None, end_time: int = None, fee_type_name: str = None) -> str:
+    """
+    格式化特定房屋特定条件欠费查询结果（支持时间范围和费用类型过滤）
+
+    Args:
+        raw_response: API 返回的原始数据
+        node_name: 查询的节点名称
+        community_name: 小区名称（可选）
+        start_time: 开始时间戳（秒），可选
+        end_time: 结束时间戳（秒），可选
+        fee_type_name: 费用类型名称（如"物业费"、"水费"），可选
+
+    Returns:
+        格式化后的欠费信息文本
+    """
+    if isinstance(raw_response, str):
+        res = json.loads(raw_response)
+    else:
+        res = raw_response
+
+    if res.get('code') != 0:
+        return f"获取失败：{res.get('msg')}"
+
+    data = res.get('data', {})
+    total_arrears = data.get('totalArrearsAmount', 0)
+    total_arrears_yuan = total_arrears / 100.0
+
+    output = ["### 房屋欠费统计\n"]
+    if community_name:
+        output.append(f"**小区名称**: {community_name}")
+    output.append(f"**查询对象**: {node_name}")
+
+    if start_time is not None and end_time is not None:
+        start_dt = datetime.datetime.fromtimestamp(start_time)
+        end_dt = datetime.datetime.fromtimestamp(end_time)
+        output.append(f"**时间范围**: {start_dt.strftime('%Y-%m-%d')} 至 {end_dt.strftime('%Y-%m-%d')}")
+
+    if fee_type_name:
+        output.append(f"**费用类型**: {fee_type_name}")
+
+    output.append(f"**欠费金额**: ¥{total_arrears_yuan:,.2f}")
+
+    if not fee_type_name:
+        output.append("\n*注：未指定费用类型，显示所有费用类型总欠费*")
+    elif not total_arrears_yuan:
+        output.append("\n*注：该条件下查询结果为0欠费*")
+
+    return "\n".join(output)
+
+
 def get_household_arrears(community_id: str, object_id: str, id_type: int, node_name: str, community_name: str = None) -> str:
     """
     查询指定对象的欠费总额
@@ -2711,6 +2914,276 @@ def get_household_arrears_by_name(charge_system_name=None, community_name=None, 
         else:
             print(f"🔍 找到：{node['name']}")
         get_household_arrears(str(comm_id), node['id'], node['id_type'], node['name'], comm_name)
+    else:
+        # 多个匹配，保存到缓存并列出供用户选择
+        save_match_cache(comm_id, matching_nodes)
+        print("MULTI_MATCH:")
+        for idx, node in enumerate(matching_nodes, 1):
+            level_label = {
+                'building': '楼栋',
+                'unit': '单元',
+                'house': '房屋'
+            }.get(node['level'], '未知')
+            print(f"{idx}. {node['name']} ({level_label})")
+
+
+def get_household_specific_arrears(community_id: str, object_id: str, id_type: int, node_name: str, community_name: str = None, start_time: int = None, end_time: int = None, charge_item_id: str = None) -> str:
+    """
+    查询指定对象特定条件的欠费（支持时间范围和费用类型过滤）
+
+    Args:
+        community_id: 小区ID
+        object_id: 楼宇/单元/房屋ID
+        id_type: 2=楼宇, 3=单元, 4=房屋
+        node_name: 节点名称，用于展示
+        community_name: 小区名称（可选）
+        start_time: 开始时间戳（秒），可选
+        end_time: 结束时间戳（秒），可选
+        charge_item_id: 收费项目ID，用于过滤特定费用类型，可选
+
+    Returns:
+        格式化的欠费信息
+    """
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+
+    params = {
+        "id": object_id,
+        "idType": id_type,
+        "assetType": 1,
+        "page": 1,
+        "pageSize": 20
+    }
+
+    # 添加可选过滤参数
+    if start_time is not None:
+        params["startTime"] = start_time
+    if end_time is not None:
+        params["endTime"] = end_time
+    if charge_item_id is not None:
+        params["selectChargeItemList"] = [int(charge_item_id)]
+
+    try:
+        response = requests.get(
+            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/getArrearsHouseList",
+            params=params,
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"接口调用失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            return "请求异常，请稍后再试。"
+
+        response.raise_for_status()
+        data = response.json()
+
+        # 需要传入fee_type_name用于显示
+        # 这里我们不转换charge_item_id到名称，因为调用者已经知道了，格式化时由上层传入
+        # 暂时传 None 给 fee_type_name，实际在高层调用时会重新格式化
+        total_arrears = data.get('data', {}).get('totalArrearsAmount', 0)
+        output = format_household_specific_arrears_result(data, node_name, community_name, start_time, end_time, None)
+        logger.info(f"成功获取 {community_id} 中 {node_name} 的特定条件欠费信息")
+        print(output)
+        return output
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"接口调用发生异常: {e}")
+        return f"接口调用发生异常: {str(e)}"
+
+
+def get_household_specific_arrears_by_name(charge_system_name=None, community_name=None, keyword=None, start_date_str=None, end_date_str=None, fee_type=None):
+    """
+    通过名称查询特定房屋特定条件的欠费（智能模式，支持时间范围和费用类型过滤）
+
+    Args:
+        charge_system_name: 收费系统名称
+        community_name: 小区名称
+        keyword: 搜索关键词（楼栋/单元/房屋）
+        start_date_str: 开始日期，格式 YYYY-MM-DD，可选
+        end_date_str: 结束日期，格式 YYYY-MM-DD，可选
+        fee_type: 费用类型（物业费、水费、电费、燃气费），可选
+    """
+    # 检查必要参数
+    if not charge_system_name:
+        print("NEED_INFO: 请提供收费系统名称")
+        print("提示：可以先使用 list_charge_systems 命令查看可用的收费系统")
+        return
+
+    if not community_name:
+        print("NEED_INFO: 请提供小区名称")
+        return
+
+    if not keyword:
+        print("NEED_INFO: 请提供搜索关键词（楼栋/单元/房屋名称）")
+        return
+
+    # 解析日期（如果提供）
+    start_time = None
+    end_time = None
+    if start_date_str and end_date_str:
+        start_dt = parse_iso_date(start_date_str)
+        if not start_dt:
+            print(f"错误：无法解析开始日期 '{start_date_str}'，请使用 YYYY-MM-DD 格式")
+            return
+        end_dt = parse_iso_date(end_date_str)
+        if not end_dt:
+            print(f"错误：无法解析结束日期 '{end_date_str}'，请使用 YYYY-MM-DD 格式")
+            return
+
+        # 开始时间设置为当天 00:00:00
+        start_dt = start_dt.replace(hour=0, minute=0, second=0)
+        # 结束时间设置为当天 23:59:59
+        end_dt = end_dt.replace(hour=23, minute=59, second=59)
+        start_time = int(start_dt.timestamp())
+        end_time = int(end_dt.timestamp())
+
+    # 获取收费系统映射
+    system_map = get_user_charge_systems(return_map=True)
+    if not system_map:
+        print("获取收费系统列表失败")
+        return
+
+    # 查找收费系统 ID
+    charge_system_id = system_map.get(charge_system_name)
+    if not charge_system_id:
+        print(f"未找到收费系统：{charge_system_name}")
+        print("可用的收费系统：" + ", ".join(system_map.keys()))
+        return
+
+    # 搜索小区
+    community_map = search_community(charge_system_id, community_name, return_map=True)
+    if community_map is None:
+        print("搜索小区失败")
+        return
+
+    if not community_map:
+        print(f"未找到匹配的小区：{community_name}")
+        return
+
+    if len(community_map) > 1:
+        # 多个匹配，列出供用户选择
+        print(f"找到多个匹配的小区，请使用完整的小区名称重新查询：")
+        for name in community_map.keys():
+            print(f"  - {name}")
+        return
+
+    # 只有一个匹配，继续处理
+    comm_name, comm_id = next(iter(community_map.items()))
+    print(f"找到小区：{comm_name}")
+
+    # 获取收费项目ID（如果指定了费用类型）
+    charge_item_id = None
+    if fee_type:
+        charge_item_id = get_charge_item_id_by_name(str(comm_id), charge_system_id, fee_type)
+
+    # 先尝试从缓存加载上一次的匹配列表
+    cache_data = load_match_cache()
+    if cache_data and str(cache_data.get('community_id')) == str(comm_id):
+        cached_nodes = cache_data.get('nodes', [])
+        if cached_nodes:
+            # 尝试解析用户选择
+            selected_node = parse_user_selection(keyword, cached_nodes)
+            if selected_node:
+                logger.info(f"用户选择了: {selected_node.get('name')}")
+                # 清除缓存，使用选中的节点查询欠费
+                clear_match_cache()
+                print(f"✓ 已选择：{selected_node['name']}")
+                get_household_specific_arrears(str(comm_id), selected_node['id'], selected_node['id_type'], selected_node['name'], comm_name, start_time, end_time, charge_item_id)
+                return
+            else:
+                # 解析失败，清除缓存，按新关键词重新搜索
+                logger.info("无法解析用户选择，清除缓存并重新搜索")
+                clear_match_cache()
+
+    # 清理关键词：去除无关词汇
+    clean_keyword = keyword
+    for word in ["查询", "的欠费", "欠费", "的", "金额", "多少", "是多少"]:
+        clean_keyword = clean_keyword.replace(word, "").strip()
+
+    # 检查是否使用精确匹配（包含 "/"）
+    use_exact_match = "/" in clean_keyword
+
+    # 获取完整房屋结构用于本地匹配
+    household_data = search_household_structure(str(comm_id), "")
+
+    if household_data is None:
+        print("搜索房屋结构失败")
+        return
+
+    # 找出匹配的节点
+    is_exact_match = False
+    is_relaxed_match = False
+    if use_exact_match:
+        # 先尝试精确匹配
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, exact_match=True)
+        if matching_nodes:
+            is_exact_match = True
+        if not matching_nodes:
+            # 精确匹配失败，降级到模糊匹配
+            logger.info("精确匹配未找到结果，使用模糊匹配")
+            keywords = clean_keyword.split("/")
+            search_kw = keywords[-1] if keywords else clean_keyword
+            household_data_for_search = search_household_structure(str(comm_id), search_kw)
+            if household_data_for_search:
+                household_data = household_data_for_search
+            matching_nodes = find_matching_nodes(household_data, clean_keyword)
+    else:
+        # 模糊匹配模式
+        keywords = split_keywords(clean_keyword)
+        search_kw = keywords[-1] if keywords else clean_keyword
+        household_data_for_search = search_household_structure(str(comm_id), search_kw)
+        if household_data_for_search:
+            household_data = household_data_for_search
+        matching_nodes = find_matching_nodes(household_data, clean_keyword)
+
+    if not matching_nodes:
+        # 尝试宽松匹配
+        logger.info(f"严格匹配未找到，尝试宽松匹配: {clean_keyword}")
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, relaxed_match=True)
+        if matching_nodes:
+            is_relaxed_match = True
+
+    if not matching_nodes:
+        # 仍然没找到，生成候选列表
+        logger.info(f"宽松匹配也未找到，生成候选列表")
+        candidates = generate_candidates(household_data, clean_keyword)
+        if candidates:
+            print_candidates(clean_keyword, candidates)
+        else:
+            print(f"未找到与'{clean_keyword}'匹配的楼栋/单元/房屋，请确认输入是否正确")
+        return
+
+    if len(matching_nodes) == 1:
+        # 只有一个匹配，输出匹配信息后查询欠费
+        node = matching_nodes[0]
+        if is_exact_match:
+            print(f"✓ 找到：{node['name']}")
+        elif is_relaxed_match:
+            print(f"🤖 找到：{node['name']}")
+        else:
+            print(f"🔍 找到：{node['name']}")
+
+        # 重新格式化输出，此时传入正确的 fee_type 名称用于显示
+        result = get_household_specific_arrears(str(comm_id), node['id'], node['id_type'], node['name'], comm_name, start_time, end_time, charge_item_id)
+        if result:
+            # 由于get_household_specific_arrears已经打印了结果，这里只需要重新格式化添加fee_type名称
+            if fee_type and '### 房屋欠费统计' in result:
+                # 我们需要重新输出一次，因为第一次格式化的时候 fee_type_name 是 None
+                # 重新读取数据重新格式化
+                import re
+                match = re.search(r'"code":\s*\d+.*', result)
+                if match:
+                    pass  # 如果已经格式化了，就直接用原来的输出，只添加fee_type信息
+                # 直接重新输出一次完整格式（用户看到两次也没关系，主要是信息正确）
+                data = json.loads(result) if isinstance(result, str) and result.startswith('{') else None
+                if data:
+                    output = format_household_specific_arrears_result(data, node['name'], comm_name, start_time, end_time, fee_type)
+                    print("\n" + output)
+        return
     else:
         # 多个匹配，保存到缓存并列出供用户选择
         save_match_cache(comm_id, matching_nodes)
@@ -3969,6 +4442,34 @@ if __name__ == "__main__":
             community_name = sys.argv[3]
             keyword = sys.argv[4]
             get_household_arrears_by_name(charge_system_name, community_name, keyword)
+    elif command == "get_household_specific_arrears":
+        # 查询特定房屋指定时间范围和费用类型欠费
+        if len(sys.argv) < 7:
+            print("错误：请提供收费系统名称、小区名称、房屋关键词、开始日期、结束日期和费用类型")
+            print("用法: python3 main.py get_household_specific_arrears <收费系统名称> <小区名称> <房屋关键词> <开始日期> <结束日期> <费用类型>")
+            print("日期格式: YYYY-MM-DD")
+            print("支持费用类型: 物业费, 水费, 电费, 燃气费")
+            print("示例: python3 main.py get_household_specific_arrears <收费系统> <小区> 1栋/1单元/101 2025-01-01 2026-12-31 物业费")
+        else:
+            charge_system_name = sys.argv[2]
+            community_name = sys.argv[3]
+            keyword = sys.argv[4]
+            start_date_str = sys.argv[5]
+            end_date_str = sys.argv[6]
+            fee_type = sys.argv[7] if len(sys.argv) > 7 else None
+            get_household_specific_arrears_by_name(charge_system_name, community_name, keyword, start_date_str, end_date_str, fee_type)
+    elif command == "get_household_fee_type_arrears":
+        # 查询特定房屋指定费用类型欠费（不限制时间）
+        if len(sys.argv) < 5:
+            print("错误：请提供收费系统名称、小区名称、房屋关键词和费用类型")
+            print("用法: python3 main.py get_household_fee_type_arrears <收费系统名称> <小区名称> <房屋关键词> <费用类型>")
+            print("支持费用类型: 物业费, 水费, 电费, 燃气费")
+        else:
+            charge_system_name = sys.argv[2]
+            community_name = sys.argv[3]
+            keyword = sys.argv[4]
+            fee_type = sys.argv[5]
+            get_household_specific_arrears_by_name(charge_system_name, community_name, keyword, None, None, fee_type)
     elif command == "get_current_user_info":
         # 查询当前登录用户信息
         if len(sys.argv) < 3:
@@ -4058,6 +4559,8 @@ if __name__ == "__main__":
         print("  get_collection_rate <收费系统名称> <小区名称> - 查询小区本月收缴率统计")
         print("  get_arrear_households <收费系统名称> <小区名称> - 查询小区欠费户数统计")
         print("  get_household_arrears <收费系统名称> <小区名称> <关键词> - 查询房屋/楼栋/单元欠费")
+        print("  get_household_specific_arrears <收费系统名称> <小区名称> <房屋关键词> <开始日期> <结束日期> <费用类型> - 查询特定房屋指定时间范围和费用类型欠费")
+        print("  get_household_fee_type_arrears <收费系统名称> <小区名称> <房屋关键词> <费用类型> - 查询特定房屋指定费用类型欠费（不限时间）")
         print("  get_current_user_info - 查询当前登录用户信息（无需参数）")
         print("  get_current_user_info <收费系统名称> <小区名称> - 查询当前登录用户完整信息")
         print("  send_wechat_reminder <收费系统名称> <小区名称> - 发送微信缴费提醒（推荐）")
