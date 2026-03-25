@@ -6,6 +6,7 @@ import socket
 import requests
 import subprocess
 import urllib.parse
+from typing import Optional
 from datetime import datetime, timedelta
 from utils import SessionManager
 from logger import logger
@@ -536,7 +537,7 @@ def parse_iso_date(date_str):
             raise ValueError(f"无法解析日期，请使用 YYYY-MM-DD 或 YYYY/MM/DD 格式: {date_str}")
 
 
-def get_property_charge_item_id(community_id: str, charge_system_id: str) -> str | None:
+def get_property_charge_item_id(community_id: str, charge_system_id: str) -> Optional[str]:
     """
     获取小区物业费收费项目ID。
 
