@@ -1838,9 +1838,11 @@ def get_ledger_list_v2(community_id: str, cs_id: str, year_month: str, charge_it
         "pageSize": 1000
     }
 
-    # 如果指定了收费项目ID，添加筛选条件
+    # 如果指定了收费项目ID，添加筛选条件并调整参数
     if charge_item_id:
         payload["selectChargeItemList"] = [int(charge_item_id)]
+        payload["type"] = "28"
+        payload["opAssetType"] = 28
 
     try:
         response = requests.post(
