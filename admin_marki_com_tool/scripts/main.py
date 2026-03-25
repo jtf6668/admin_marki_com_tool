@@ -1803,7 +1803,7 @@ def get_current_month_year_range():
     return now.strftime("%Y-%m")
 
 
-def get_ledger_list_v2(community_id: str, cs_id: str, year_month: str) -> dict:
+def get_ledger_list_v2(community_id: str, cs_id: str, year_month: str, charge_item_id: str = None) -> dict:
     """
     获取小区指定月份的台账信息
 
@@ -1811,6 +1811,7 @@ def get_ledger_list_v2(community_id: str, cs_id: str, year_month: str) -> dict:
         community_id: 小区ID
         cs_id: 收费系统ID
         year_month: 年月 (YYYY-MM格式)
+        charge_item_id: 收费项目ID（可选，筛选指定收费类型）
 
     Returns:
         台账数据字典
@@ -1836,6 +1837,10 @@ def get_ledger_list_v2(community_id: str, cs_id: str, year_month: str) -> dict:
         "page": 1,
         "pageSize": 1000
     }
+
+    # 如果指定了收费项目ID，添加筛选条件
+    if charge_item_id:
+        payload["selectChargeItemList"] = [int(charge_item_id)]
 
     try:
         response = requests.post(
@@ -1863,7 +1868,7 @@ def get_ledger_list_v2(community_id: str, cs_id: str, year_month: str) -> dict:
         return None
 
 
-def format_collection_rate_stats(community_name: str, ledger_data: dict, year_month: str) -> str:
+def format_collection_rate_stats(community_name: str, ledger_data: dict, year_month: str, fee_type_name: str = None) -> str:
     """
     格式化收缴率统计数据
 
@@ -1871,6 +1876,7 @@ def format_collection_rate_stats(community_name: str, ledger_data: dict, year_mo
         community_name: 小区名称
         ledger_data: 台账数据
         year_month: 年月 (YYYY-MM格式)
+        fee_type_name: 费用类型名称（可选）
 
     Returns:
         格式化后的统计文本
@@ -1878,7 +1884,10 @@ def format_collection_rate_stats(community_name: str, ledger_data: dict, year_mo
     year_month_dt = datetime.strptime(year_month, "%Y-%m")
     month_str = year_month_dt.strftime("%Y年%m月")
 
-    output = [f"### {community_name} {month_str} 房屋收缴率统计\n"]
+    if fee_type_name:
+        output = [f"### {community_name} {month_str} {fee_type_name} 收缴率统计\n"]
+    else:
+        output = [f"### {community_name} {month_str} 房屋收缴率统计\n"]
 
     # 从数据中提取统计信息
     total_property = ledger_data.get('totalProperty', 0)  # 总房屋数
@@ -1911,7 +1920,7 @@ def format_collection_rate_stats(community_name: str, ledger_data: dict, year_mo
     return "\n".join(output)
 
 
-def get_community_collection_rate(community_id: str, cs_id: str, community_name: str = None) -> str:
+def get_community_collection_rate(community_id: str, cs_id: str, community_name: str = None, charge_item_id: str = None, fee_type_name: str = None) -> str:
     """
     获取小区本月收缴率统计
 
@@ -1919,12 +1928,14 @@ def get_community_collection_rate(community_id: str, cs_id: str, community_name:
         community_id: 小区ID
         cs_id: 收费系统ID
         community_name: 小区名称（可选）
+        charge_item_id: 收费项目ID（可选，筛选指定收费类型）
+        fee_type_name: 费用类型名称（可选，用于输出显示）
 
     Returns:
         统计结果文本
     """
     year_month = get_current_month_year_range()
-    ledger_data = get_ledger_list_v2(community_id, cs_id, year_month)
+    ledger_data = get_ledger_list_v2(community_id, cs_id, year_month, charge_item_id)
 
     if ledger_data is None:
         return "获取台账信息失败"
@@ -1932,19 +1943,20 @@ def get_community_collection_rate(community_id: str, cs_id: str, community_name:
     if not community_name:
         community_name = "该小区"
 
-    output = format_collection_rate_stats(community_name, ledger_data, year_month)
+    output = format_collection_rate_stats(community_name, ledger_data, year_month, fee_type_name)
     logger.info(f"成功获取小区 {community_id} 的本月收缴率统计")
     print(f"返回数据：{output}")
     return output
 
 
-def get_collection_rate(charge_system_name=None, community_name=None):
+def get_collection_rate(charge_system_name=None, community_name=None, fee_type=None):
     """
     通过名称查询小区本月收缴率统计（智能模式）
 
     Args:
         charge_system_name: 收费系统名称
         community_name: 小区名称
+        fee_type: 费用类型名称（可选，如"物业管理费"）
     """
     # 检查必要参数
     if not charge_system_name:
@@ -1983,7 +1995,15 @@ def get_collection_rate(charge_system_name=None, community_name=None):
         # 只有一个匹配，直接查询
         comm_name, comm_id = next(iter(community_map.items()))
         print(f"找到小区：{comm_name}")
-        get_community_collection_rate(str(comm_id), str(charge_system_id), comm_name)
+
+        # 如果指定了费用类型，获取收费项目ID
+        charge_item_id = None
+        if fee_type:
+            charge_item_id = get_charge_item_id_by_name(str(comm_id), str(charge_system_id), fee_type)
+            if not charge_item_id:
+                print(f"警告：未找到匹配的收费项目 '{fee_type}'，将返回所有收费类型汇总数据")
+
+        get_community_collection_rate(str(comm_id), str(charge_system_id), comm_name, charge_item_id, fee_type)
     else:
         # 多个匹配，列出供用户选择
         print(f"找到多个匹配的小区，请使用完整的小区名称重新查询：")
@@ -4398,20 +4418,25 @@ if __name__ == "__main__":
         # 查询小区本月收缴率统计
         if len(sys.argv) < 4:
             print("错误：请提供收费系统名称和小区名称")
-            print("用法: python3 main.py get_collection_rate <收费系统名称> <小区名称>")
+            print("用法: python3 main.py get_collection_rate <收费系统名称> <小区名称> [费用类型名称]")
+            print("示例: python3 main.py get_collection_rate 收费系统 小区 物业管理费")
         else:
             charge_system_name = sys.argv[2]
             community_name = sys.argv[3]
-            get_collection_rate(charge_system_name, community_name)
+            fee_type = sys.argv[4] if len(sys.argv) >= 5 else None
+            get_collection_rate(charge_system_name, community_name, fee_type)
     elif command == "get_community_collection_rate":
         # 通过小区ID和收费系统ID查询本月收缴率统计
         if len(sys.argv) < 4:
             print("错误：请提供小区ID和收费系统ID参数")
-            print("用法: python3 main.py get_community_collection_rate <小区ID> <收费系统ID>")
+            print("用法: python3 main.py get_community_collection_rate <小区ID> <收费系统ID> [收费项目ID] [费用类型名称]")
+            print("示例: python3 main.py get_community_collection_rate 10587 10643 71107 物业管理费")
         else:
             community_id = sys.argv[2]
             cs_id = sys.argv[3]
-            get_community_collection_rate(community_id, cs_id)
+            charge_item_id = sys.argv[4] if len(sys.argv) >= 5 else None
+            fee_type_name = sys.argv[5] if len(sys.argv) >= 6 else charge_item_id
+            get_community_collection_rate(community_id, cs_id, None, charge_item_id, fee_type_name)
     elif command == "get_arrear_households":
         # 查询小区欠费户数统计
         if len(sys.argv) < 4:

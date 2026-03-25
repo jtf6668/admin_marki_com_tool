@@ -10,10 +10,12 @@
 | 查询小区自定义时间范围收入统计 | `python3 {baseDir}/scripts/main.py get_custom_range_stats <收费系统名称> <小区名称> <开始日期> <结束日期>` |
 | 查询小区本月支出统计 | `python3 {baseDir}/scripts/main.py get_monthly_expense <收费系统名称> <小区名称>` |
 | 查询小区本月收缴率统计 | `python3 {baseDir}/scripts/main.py get_collection_rate <收费系统名称> <小区名称>` |
+| 查询小区本月指定费用类型收缴率统计 | `python3 {baseDir}/scripts/main.py get_collection_rate <收费系统名称> <小区名称> <费用类型名称>` |
 | 通过小区ID查询今日收入统计 | `python3 {baseDir}/scripts/main.py get_community_today_stats <小区ID>` |
 | 通过小区ID查询自定义时间范围收入统计 | `python3 {baseDir}/scripts/main.py get_community_custom_range_stats <小区ID> <开始时间戳> <结束时间戳>` |
 | 通过小区ID查询本月支出统计 | `python3 {baseDir}/scripts/main.py get_community_monthly_expense <小区ID>` |
 | 通过小区ID查询本月收缴率统计 | `python3 {baseDir}/scripts/main.py get_community_collection_rate <小区ID> <收费系统ID>` |
+| 通过小区ID查询本月指定收费项目收缴率统计 | `python3 {baseDir}/scripts/main.py get_community_collection_rate <小区ID> <收费系统ID> <收费项目ID> <费用类型名称>` |
 
 ---
 
@@ -90,10 +92,14 @@
 **用户示例**：
 - "本月小区房屋收缴率是多少？"
 - "这个月小区物业费收缴率是多少？"
+- "本月小区物业管理费收缴率是多少？"
 - "本月小区有多少户已经缴清费用？"
 
 **处理步骤**：
 1. 只要用户询问关于"本月"、"这个月"的任何收缴率相关统计，都直接调用 `get_collection_rate` 命令获取完整的本月收缴率统计
-2. 如果信息完整（收费系统名称、小区名称都有），直接调用 `get_collection_rate <收费系统名称> <小区名称>`
-3. 如果信息不完整，按照通用流程逐步询问用户缺失的信息
-4. 展示完整的统计结果给用户（结果中包含用户需要的所有信息）
+2. 如果用户指定了费用类型（如物业费、物业管理费等），需要将费用类型作为第三个参数传入
+3. 如果信息完整（收费系统名称、小区名称都有）：
+   - 无费用类型：`get_collection_rate <收费系统名称> <小区名称>`
+   - 有费用类型：`get_collection_rate <收费系统名称> <小区名称> <费用类型名称>`
+4. 如果信息不完整，按照通用流程逐步询问用户缺失的信息
+5. 展示完整的统计结果给用户（结果中包含用户需要的所有信息）
