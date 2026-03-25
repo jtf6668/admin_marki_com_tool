@@ -2700,8 +2700,8 @@ def format_household_specific_arrears_result(raw_response, node_name: str, commu
     output.append(f"**查询对象**: {node_name}")
 
     if start_time is not None and end_time is not None:
-        start_dt = datetime.datetime.fromtimestamp(start_time)
-        end_dt = datetime.datetime.fromtimestamp(end_time)
+        start_dt = datetime.fromtimestamp(start_time)
+        end_dt = datetime.fromtimestamp(end_time)
         output.append(f"**时间范围**: {start_dt.strftime('%Y-%m-%d')} 至 {end_dt.strftime('%Y-%m-%d')}")
 
     if fee_type_name:
@@ -2927,7 +2927,7 @@ def get_household_arrears_by_name(charge_system_name=None, community_name=None, 
             print(f"{idx}. {node['name']} ({level_label})")
 
 
-def get_household_specific_arrears(community_id: str, object_id: str, id_type: int, node_name: str, community_name: str = None, start_time: int = None, end_time: int = None, charge_item_id: str = None) -> str:
+def get_household_specific_arrears(community_id: str, object_id: str, id_type: int, node_name: str, community_name: str = None, start_time: int = None, end_time: int = None, charge_item_id: str = None, fee_type_name: str = None) -> str:
     """
     查询指定对象特定条件的欠费（支持时间范围和费用类型过滤）
 
@@ -2940,6 +2940,7 @@ def get_household_specific_arrears(community_id: str, object_id: str, id_type: i
         start_time: 开始时间戳（秒），可选
         end_time: 结束时间戳（秒），可选
         charge_item_id: 收费项目ID，用于过滤特定费用类型，可选
+        fee_type_name: 费用类型名称，用于显示，可选
 
     Returns:
         格式化的欠费信息
@@ -2981,11 +2982,7 @@ def get_household_specific_arrears(community_id: str, object_id: str, id_type: i
         response.raise_for_status()
         data = response.json()
 
-        # 需要传入fee_type_name用于显示
-        # 这里我们不转换charge_item_id到名称，因为调用者已经知道了，格式化时由上层传入
-        # 暂时传 None 给 fee_type_name，实际在高层调用时会重新格式化
-        total_arrears = data.get('data', {}).get('totalArrearsAmount', 0)
-        output = format_household_specific_arrears_result(data, node_name, community_name, start_time, end_time, None)
+        output = format_household_specific_arrears_result(data, node_name, community_name, start_time, end_time, fee_type_name)
         logger.info(f"成功获取 {community_id} 中 {node_name} 的特定条件欠费信息")
         print(output)
         return output
@@ -3092,7 +3089,7 @@ def get_household_specific_arrears_by_name(charge_system_name=None, community_na
                 # 清除缓存，使用选中的节点查询欠费
                 clear_match_cache()
                 print(f"✓ 已选择：{selected_node['name']}")
-                get_household_specific_arrears(str(comm_id), selected_node['id'], selected_node['id_type'], selected_node['name'], comm_name, start_time, end_time, charge_item_id)
+                get_household_specific_arrears(str(comm_id), selected_node['id'], selected_node['id_type'], selected_node['name'], comm_name, start_time, end_time, charge_item_id, fee_type)
                 return
             else:
                 # 解析失败，清除缓存，按新关键词重新搜索
@@ -3168,7 +3165,7 @@ def get_household_specific_arrears_by_name(charge_system_name=None, community_na
             print(f"🔍 找到：{node['name']}")
 
         # 重新格式化输出，此时传入正确的 fee_type 名称用于显示
-        result = get_household_specific_arrears(str(comm_id), node['id'], node['id_type'], node['name'], comm_name, start_time, end_time, charge_item_id)
+        result = get_household_specific_arrears(str(comm_id), node['id'], node['id_type'], node['name'], comm_name, start_time, end_time, charge_item_id, fee_type)
         if result:
             # 由于get_household_specific_arrears已经打印了结果，这里只需要重新格式化添加fee_type名称
             if fee_type and '### 房屋欠费统计' in result:
