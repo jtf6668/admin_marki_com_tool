@@ -92,6 +92,65 @@ def clear_match_cache():
             logger.warning(f"清除匹配缓存失败: {e}")
 
 
+# === 短信催缴确认缓存相关函数 ===
+def get_sms_confirmation_cache_path():
+    """获取短信催缴确认缓存文件路径"""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_dir, '.sms_confirmation_cache.json')
+
+
+def save_sms_confirmation(data):
+    """保存短信催缴确认数据到缓存"""
+    cache_data = {
+        "timestamp": time.time(),
+        "data": data
+    }
+    try:
+        with open(get_sms_confirmation_cache_path(), 'w', encoding='utf-8') as f:
+            json.dump(cache_data, f, ensure_ascii=False, indent=2)
+        logger.info(f"已保存短信催缴确认数据")
+    except Exception as e:
+        logger.warning(f"保存短信催缴确认数据失败: {e}")
+
+
+def load_sms_confirmation():
+    """从缓存加载短信催缴确认数据（5分钟内有效）
+
+    Returns:
+        dict: 确认数据或 None
+    """
+    cache_path = get_sms_confirmation_cache_path()
+    if not os.path.exists(cache_path):
+        return None
+
+    try:
+        with open(cache_path, 'r', encoding='utf-8') as f:
+            cache_data = json.load(f)
+
+        # 检查是否过期（5分钟）
+        if time.time() - cache_data.get('timestamp', 0) > 300:
+            logger.info("短信催缴确认缓存已过期")
+            clear_sms_confirmation()
+            return None
+
+        logger.info(f"从缓存加载了短信催缴确认数据")
+        return cache_data.get('data')
+    except Exception as e:
+        logger.warning(f"加载短信催缴确认数据失败: {e}")
+        return None
+
+
+def clear_sms_confirmation():
+    """清除短信催缴确认缓存"""
+    cache_path = get_sms_confirmation_cache_path()
+    if os.path.exists(cache_path):
+        try:
+            os.remove(cache_path)
+            logger.info("已清除短信催缴确认缓存")
+        except Exception as e:
+            logger.warning(f"清除短信催缴确认缓存失败: {e}")
+
+
 # === 用户选择解析函数 ===
 def parse_user_selection(input_str, matching_nodes):
     """
@@ -3628,6 +3687,429 @@ def send_wechat_payment_reminder_by_name(charge_system_name=None, community_name
             print(f"  - {name}")
 
 
+def send_single_house_sms_reminder(community_id: str, asset_id: int, uids: list, ids: list) -> dict:
+    """
+    发送单个房屋短信催缴
+
+    Args:
+        community_id: 小区ID
+        asset_id: 房屋ID
+        uids: 业主ID列表
+        ids: 账单ID列表
+
+    Returns:
+        API响应数据字典
+    """
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+
+    payload = {
+        "sendType": 2,
+        "templateId": -1,
+        "uids": uids,
+        "assetType": 1,
+        "assetId": asset_id,
+        "ids": ids,
+        "communityID": int(community_id)
+    }
+
+    try:
+        response = requests.post(
+            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/sendMessage",
+            json=payload,
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"发送短信催缴失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            return None
+
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get('code') != 0:
+            logger.error(f"发送短信催缴失败: {data.get('msg')}")
+            return None
+
+        logger.info(f"成功发送短信催缴到房屋 {asset_id}，业主ID: {uids}，账单ID: {ids}")
+        return data
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"发送短信催缴发生异常: {e}")
+        return None
+
+
+def send_single_house_sms_reminder_by_name(charge_system_name=None, community_name=None, keyword=None):
+    """
+    通过名称智能匹配房屋并发送短信催缴
+
+    Args:
+        charge_system_name: 收费系统名称
+        community_name: 小区名称
+        keyword: 房屋位置关键词
+    """
+    # 检查必要参数
+    if not charge_system_name:
+        print("NEED_INFO: 请提供收费系统名称")
+        print("提示：可以先使用 list_charge_systems 命令查看可用的收费系统")
+        return
+
+    if not community_name:
+        print("NEED_INFO: 请提供小区名称")
+        return
+
+    if not keyword:
+        print("NEED_INFO: 请提供房屋位置关键词（如楼栋/单元/房屋号）")
+        return
+
+    # 获取收费系统映射
+    system_map = get_user_charge_systems(return_map=True)
+    if not system_map:
+        print("获取收费系统列表失败")
+        return
+
+    # 查找收费系统 ID
+    charge_system_id = system_map.get(charge_system_name)
+    if not charge_system_id:
+        print(f"未找到收费系统：{charge_system_name}")
+        print("可用的收费系统：" + ", ".join(system_map.keys()))
+        return
+
+    # 搜索小区
+    community_map = search_community(charge_system_id, community_name, return_map=True)
+    if community_map is None:
+        print("搜索小区失败")
+        return
+
+    if not community_map:
+        print(f"未找到匹配的小区：{community_name}")
+        return
+
+    if len(community_map) > 1:
+        # 多个匹配，列出供用户选择
+        print(f"找到多个匹配的小区，请使用完整的小区名称重新查询：")
+        for name in community_map.keys():
+            print(f"  - {name}")
+        return
+
+    # 只有一个匹配，继续处理
+    comm_name, comm_id = next(iter(community_map.items()))
+    print(f"找到小区：{comm_name}")
+
+    # 先尝试从缓存加载上一次的匹配列表
+    cache_data = load_match_cache()
+    if cache_data and str(cache_data.get('community_id')) == str(comm_id):
+        cached_nodes = cache_data.get('nodes', [])
+        if cached_nodes:
+            # 尝试解析用户选择
+            selected_node = parse_user_selection(keyword, cached_nodes)
+            if selected_node:
+                logger.info(f"用户选择了: {selected_node.get('name')}")
+                # 清除缓存
+                clear_match_cache()
+                # 检查是否是房屋级别
+                if selected_node['level'] != 'house':
+                    print(f"请选择具体的房屋进行短信催缴，当前选择的是{selected_node['name']}（{selected_node['level']}）")
+                    return
+                # 继续处理
+                return _process_single_house_sms_reminder(str(comm_id), selected_node, comm_name)
+            else:
+                # 解析失败，清除缓存，按新关键词重新搜索
+                logger.info("无法解析用户选择，清除缓存并重新搜索")
+                clear_match_cache()
+
+    # 清理关键词
+    clean_keyword = keyword.replace("短信催缴", "").replace("催缴", "").replace("的", "").strip()
+
+    # 检查是否使用精确匹配
+    use_exact_match = "/" in clean_keyword
+
+    # 获取完整房屋结构
+    household_data = search_household_structure(str(comm_id), "")
+
+    if household_data is None:
+        print("搜索房屋结构失败")
+        return
+
+    # 找出匹配的节点
+    if use_exact_match:
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, exact_match=True)
+        if not matching_nodes:
+            logger.info("精确匹配未找到结果，使用模糊匹配")
+            keywords = clean_keyword.split("/")
+            search_kw = keywords[-1] if keywords else clean_keyword
+            household_data_for_search = search_household_structure(str(comm_id), search_kw)
+            if household_data_for_search:
+                household_data = household_data_for_search
+            matching_nodes = find_matching_nodes(household_data, clean_keyword)
+    else:
+        keywords = split_keywords(clean_keyword)
+        search_kw = keywords[-1] if keywords else clean_keyword
+        household_data_for_search = search_household_structure(str(comm_id), search_kw)
+        if household_data_for_search:
+            household_data = household_data_for_search
+        matching_nodes = find_matching_nodes(household_data, clean_keyword)
+
+    if not matching_nodes:
+        # 尝试宽松匹配
+        logger.info(f"严格匹配未找到，尝试宽松匹配: {clean_keyword}")
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, relaxed_match=True)
+
+    if not matching_nodes:
+        # 仍然没找到，生成候选列表
+        logger.info(f"宽松匹配也未找到，生成候选列表")
+        candidates = generate_candidates(household_data, clean_keyword)
+        if candidates:
+            print_candidates(clean_keyword, candidates)
+        else:
+            print(f"未找到与'{clean_keyword}'匹配的楼栋/单元/房屋，请确认输入是否正确")
+        return
+
+    if len(matching_nodes) == 1:
+        node = matching_nodes[0]
+        if node['level'] != 'house':
+            print(f"请选择具体的房屋进行短信催缴，当前选择的是{node['name']}（{node['level']}）")
+            return
+        return _process_single_house_sms_reminder(str(comm_id), node, comm_name)
+    else:
+        save_match_cache(comm_id, matching_nodes)
+        print("MULTI_MATCH:")
+        for idx, node in enumerate(matching_nodes, 1):
+            level_label = {
+                'building': '楼栋',
+                'unit': '单元',
+                'house': '房屋'
+            }.get(node['level'], '未知')
+            print(f"{idx}. {node['name']} ({level_label})")
+
+
+def _process_single_house_sms_reminder(community_id: str, house_node: dict, community_name: str):
+    """
+    内部函数：处理单个房屋短信催缴流程
+
+    Args:
+        community_id: 小区ID
+        house_node: 房屋节点
+        community_name: 小区名称
+    """
+    house_id = house_node['id']
+    house_name = house_node['name']
+
+    print(f"已选择房屋：{house_name}")
+
+    # 查询欠费信息获取业主和账单ID
+    arrears_data = get_household_arrears_by_id(community_id, str(house_id))
+    if not arrears_data:
+        print("查询欠费信息失败")
+        return
+
+    arrears_list = arrears_data.get('data', [])
+    if not arrears_list:
+        print(f"该房屋当前没有欠费账单，无需发送短信催缴")
+        return
+
+    # 提取信息：房屋ID、业主列表、账单ID列表
+    # 从第一个欠费项获取房屋信息
+    first_arrear = arrears_list[0]
+    house_info = first_arrear.get('houseInfo', {})
+    asset_id = house_info.get('id')
+    if not asset_id:
+        print("无法获取房屋ID信息")
+        return
+
+    # 收集所有业主ID和姓名
+    # 每个欠费项可能包含houseUser，需要去重
+    user_map = {}  # uid -> user name
+    bill_ids = []  # 所有账单ID
+    for arrear in arrears_list:
+        # 收集账单ID - 从 idStr 拆分逗号分隔
+        id_str = arrear.get('idStr', '')
+        if id_str:
+            for bill_id_str in id_str.split(','):
+                bill_id_str = bill_id_str.strip()
+                if bill_id_str and bill_id_str.isdigit():
+                    bill_ids.append(int(bill_id_str))
+        # 收集业主
+        house_users = arrear.get('houseUser', [])
+        for hu in house_users:
+            uid = hu.get('id')  # 字段名是 id，不是 uid
+            user_name = hu.get('name', '')  # 字段名是 name，不是 userName
+            if uid and uid not in user_map:
+                user_map[uid] = user_name
+
+    if not user_map:
+        print(f"未找到该房屋的业主信息，无法发送短信")
+        return
+
+    if not bill_ids:
+        print(f"未找到该房屋的欠费账单ID，无法发送短信")
+        return
+
+    # 输出待确认信息
+    print("\n### 待发送短信催缴信息\n")
+    print(f"**小区**: {community_name}")
+    print(f"**房屋**: {house_name}")
+    print(f"**欠费账单数**: {len(bill_ids)} 条")
+    print(f"**业主列表**: {', '.join(user_map.values())}\n")
+
+    print("请确认是否发送短信催缴？")
+    print("- 运行命令 `confirm_sms_reminder yes` 发送给全部业主")
+    print("- 运行命令 `confirm_sms_reminder <序号>`（如`confirm_sms_reminder 1`或`confirm_sms_reminder 1,2`）只发送给指定业主")
+    print("- 运行命令 `confirm_sms_reminder no` 取消")
+
+    # 保存信息供用户确认
+    # 将用户列表转为有序列表以便按序号选择
+    pending_data = {
+        'community_id': community_id,
+        'asset_id': asset_id,
+        'user_map': user_map,
+        'bill_ids': bill_ids,
+        'house_name': house_name,
+        'community_name': community_name
+    }
+    # 存储到文件供后续处理
+    save_sms_confirmation(pending_data)
+
+
+def get_household_arrears_by_id(community_id: str, house_id: str) -> dict:
+    """
+    通过房屋ID查询房屋欠费信息
+
+    Args:
+        community_id: 小区ID
+        house_id: 房屋ID
+
+    Returns:
+        API响应数据字典
+    """
+    import random
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+
+    params = {
+        "id": house_id,
+        "idType": 4,
+        "assetType": 1,
+        "page": 1,
+        "pageSize": 20,
+        "r": random.random()
+    }
+
+    try:
+        response = requests.get(
+            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/getArrearsHouseList",
+            params=params,
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"查询房屋欠费失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            return None
+
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get('code') != 0:
+            logger.error(f"查询房屋欠费失败: {data.get('msg')}")
+            return None
+
+        # 数据在 data.list 中
+        arrears_list = data.get('data', {}).get('list', [])
+        logger.info(f"成功查询房屋 {house_id} 欠费，共 {len(arrears_list)} 条")
+        # 返回格式保持一致，外层data直接放列表
+        result_data = data.copy()
+        result_data['data'] = arrears_list
+        return result_data
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"查询房屋欠费发生异常: {e}")
+        return None
+
+
+def confirm_sms_reminder(confirmation_input):
+    """
+    处理用户对短信催缴的确认，根据用户选择发送短信
+
+    Args:
+        confirmation_input: 用户确认输入 yes/no 或序号
+    """
+    confirmation_input = confirmation_input.strip().lower()
+
+    # 加载待确认数据
+    pending_data = load_sms_confirmation()
+    if not pending_data:
+        print("未找到待确认的短信催缴数据，请先使用 send_sms_reminder 命令查询")
+        print("数据已过期（超过5分钟）或已被处理，请重新查询")
+        return
+
+    community_id = pending_data.get('community_id')
+    asset_id = pending_data.get('asset_id')
+    user_map = pending_data.get('user_map', {})  # uid -> user name
+    bill_ids = pending_data.get('bill_ids', [])
+    house_name = pending_data.get('house_name')
+    community_name = pending_data.get('community_name')
+
+    # 用户列表转为有序列表
+    users_list = list(user_map.items())  # [(uid, name), ...]
+
+    # 处理取消
+    if confirmation_input in ['no', 'n', '否', '取消']:
+        print("已取消短信催缴")
+        clear_sms_confirmation()
+        return
+
+    # 处理发送全部业主
+    if confirmation_input in ['yes', 'y', '是']:
+        selected_uids = [uid for uid, name in users_list]
+        selected_names = [name for uid, name in users_list]
+    else:
+        # 处理序号选择
+        # 解析多个序号（逗号分隔）
+        selected_indices = []
+        try:
+            for part in confirmation_input.split(','):
+                part = part.strip()
+                if part.isdigit():
+                    idx = int(part) - 1  # 用户看到的是从1开始
+                    if 0 <= idx < len(users_list):
+                        selected_indices.append(idx)
+        except ValueError:
+            print(f"无法解析选择: {confirmation_input}，请使用 yes/no 或序号（如 1 或 1,2）")
+            return
+
+        if not selected_indices:
+            print(f"未找到任何有效的选择，请重新输入")
+            return
+
+        selected_uids = [users_list[idx][0] for idx in selected_indices]
+        selected_names = [users_list[idx][1] for idx in selected_indices]
+
+    # 现在发送短信
+    print(f"正在发送短信催缴...")
+    result = send_single_house_sms_reminder(community_id, asset_id, selected_uids, bill_ids)
+
+    if result:
+        print("\n✓ 短信催缴发送成功！\n")
+        print(f"**小区**: {community_name}")
+        print(f"**房屋**: {house_name}")
+        print(f"**接收业主**: {', '.join(selected_names)}")
+        print(f"**账单数量**: {len(bill_ids)}")
+        logger.info(f"短信催缴发送成功: 小区={community_name}, 房屋={house_name}, 业主={selected_names}, 账单数={len(bill_ids)}")
+    else:
+        print("\n✗ 短信催缴发送失败，请查看日志获取详细信息")
+
+    # 清除确认缓存
+    clear_sms_confirmation()
+
+
 def get_meter_list(community_id: str, house_id: str) -> dict:
     """
     获取指定房屋的仪器列表
@@ -4567,6 +5049,44 @@ if __name__ == "__main__":
             result = get_community_cs_init_info(community_id, cs_id)
             if result:
                 print(result)
+    elif command == "send_sms_reminder":
+        # 发送单个房屋短信催缴（推荐，通过名称智能匹配）
+        if len(sys.argv) < 5:
+            print("错误：请提供收费系统名称、小区名称和房屋关键词")
+            print("用法: python3 main.py send_sms_reminder <收费系统名称> <小区名称> <房屋关键词>")
+            print("示例: python3 main.py send_sms_reminder 收费系统 小区 1栋/1单元/101")
+        else:
+            charge_system_name = sys.argv[2]
+            community_name = sys.argv[3]
+            keyword = sys.argv[4]
+            send_single_house_sms_reminder_by_name(charge_system_name, community_name, keyword)
+    elif command == "send_single_house_sms_reminder":
+        # 发送单个房屋短信催缴（底层ID模式，备用）
+        if len(sys.argv) < 6:
+            print("错误：请提供小区ID、房屋ID、业主ID列表和账单ID列表")
+            print("用法: python3 main.py send_single_house_sms_reminder <小区ID> <房屋ID> <业主ID逗号分隔> <账单ID逗号分隔>")
+        else:
+            community_id = sys.argv[2]
+            asset_id = int(sys.argv[3])
+            uids = [int(uid) for uid in sys.argv[4].split(',') if uid.strip()]
+            ids = [int(bid) for bid in sys.argv[5].split(',') if bid.strip()]
+            result = send_single_house_sms_reminder(community_id, asset_id, uids, ids)
+            if result:
+                print(f"✓ 短信催缴发送成功！")
+                print(f"响应消息：{result.get('msg', '无')}")
+            else:
+                print("短信催缴发送失败，请查看日志获取详细信息")
+    elif command == "confirm_sms_reminder":
+        # 确认短信催发送，处理用户选择
+        if len(sys.argv) < 3:
+            print("错误：请提供确认选项（yes/no 或序号）")
+            print("用法: python3 main.py confirm_sms_reminder <yes/no/序号>")
+            print("示例: python3 main.py confirm_sms_reminder yes")
+            print("示例: python3 main.py confirm_sms_reminder 1")
+            print("示例: python3 main.py confirm_sms_reminder 1,2")
+        else:
+            confirmation_input = sys.argv[2]
+            confirm_sms_reminder(confirmation_input)
     else:
         print("错误：未知的指令或参数不足")
         print("可用指令:")
@@ -4599,3 +5119,6 @@ if __name__ == "__main__":
         print("  get_community_collection_rate <小区ID> <收费系统ID> - 通过ID查询本月收缴率统计")
         print("  get_community_arrear_households <小区ID> - 通过ID查询欠费户数统计")
         print("  get_community_cs_init_info <小区ID> <收费系统ID> - 通过ID查询初始化信息")
+        print("  send_sms_reminder <收费系统名称> <小区名称> <房屋关键词> - 单个房屋短信催缴（推荐，智能匹配）")
+        print("  confirm_sms_reminder <yes/no/序号> - 确认短信催缴发送处理")
+        print("  send_single_house_sms_reminder <小区ID> <房屋ID> <业主ID逗号分隔> <账单ID逗号分隔> - 单个房屋短信催缴（ID模式，备用）")

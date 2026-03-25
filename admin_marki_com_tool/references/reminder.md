@@ -1,19 +1,135 @@
 # 催费模块
 
-本模块预留，将来添加所有催费相关功能。
+本模块包含所有催费相关功能。
+
+## 已实现功能
+
+- 发送全小区微信缴费提醒
+- **单个房屋短信催缴** ✅ 已实现
 
 ## 规划中的功能
 
 - 向欠费账期大于N个月的所有房屋进行短信催缴
 - 向欠费金额大于N元的所有房屋进行短信催缴
-- 发送微信催费通知给所有业主
 - 生成单个房屋的纸质催缴通知单
 - 生成单个房屋的催缴链接
-- 对单个房屋进行短信催缴
 - 生成催缴工单
 - 创建电话催缴记录
 - 自动拨打电话催缴
 
 ## 可用命令
 
-*(待实现)*
+| 命令 | 说明 | 参数 |
+|------|------|------|
+| `send_sms_reminder` | 单个房屋短信催缴（推荐，智能匹配） | `收费系统名称 小区名称 房屋关键词` |
+| `confirm_sms_reminder` | 确认短信催缴发送处理 | `yes/no/序号` |
+| `send_single_house_sms_reminder` | 单个房屋短信催缴（ID模式，备用） | `小区ID 房屋ID 业主ID逗号分隔 账单ID逗号分隔` |
+| `send_wechat_reminder` | 全小区微信缴费提醒（智能匹配） | `收费系统名称 小区名称` |
+| `send_community_wechat_reminder` | 通过小区ID发送微信缴费提醒 | `小区ID` |
+
+## 处理流程 - 单个房屋短信催缴
+
+### 第一步：查询待发送信息
+```bash
+python3 main.py send_sms_reminder <收费系统名称> <小区名称> <房屋关键词>
+```
+
+系统会：
+1. 匹配小区
+2. 匹配房屋（支持精确路径匹配如`1栋/1单元/101`，也支持模糊搜索）
+3. 查询该房屋的欠费信息
+4. 提取业主ID列表和账单ID列表
+5. 输出待确认信息供用户确认
+
+**示例输出：**
+```
+找到小区：XXX花园
+已选择房屋：1栋/1单元/101
+
+### 待发送短信催缴信息
+
+**小区**: XXX花园
+**房屋**: 1栋/1单元/101
+**欠费账单数**: 3 条
+**业主列表**: 张三, 李四
+
+请确认是否发送短信催缴？
+- 运行命令 `confirm_sms_reminder yes` 发送给全部业主
+- 运行命令 `confirm_sms_reminder <序号>`（如`confirm_sms_reminder 1`或`confirm_sms_reminder 1,2`）只发送给指定业主
+- 运行命令 `confirm_sms_reminder no` 取消
+```
+
+### 第二步：用户确认发送
+根据你的选择运行对应的确认命令：
+
+**发送给全部业主：**
+```bash
+python3 main.py confirm_sms_reminder yes
+```
+
+**只发送给第一个业主：**
+```bash
+python3 main.py confirm_sms_reminder 1
+```
+
+**只发送给指定序号的业主：**
+```bash
+python3 main.py confirm_sms_reminder 1,2
+```
+
+**取消发送：**
+```bash
+python3 main.py confirm_sms_reminder no
+```
+
+### 第三步：发送结果
+
+**发送成功示例输出：**
+```
+✓ 短信催缴发送成功！
+
+**小区**: XXX花园
+**房屋**: 1栋/1单元/101
+**接收业主**: 张三, 李四
+**账单数量**: 3
+```
+
+**发送失败会输出错误信息，详情可查看日志。**
+
+## API 说明
+
+### 发送短信接口
+- **端点**: `{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/sendMessage`
+- **方法**: POST
+- **Payload 格式**:
+```json
+{
+    "sendType": 2,
+    "templateId": -1,
+    "uids": [12345, 67890],
+    "assetType": 1,
+    "assetId": 12345,
+    "ids": [11111, 22222],
+    "communityID": 123
+}
+```
+
+- **字段说明**:
+  - `sendType`: 2 = 短信发送
+  - `templateId`: -1 = 使用默认模板
+  - `uids`: 业主ID列表
+  - `assetType`: 1 = 房屋
+  - `assetId`: 房屋ID
+  - `ids`: 账单ID列表
+  - `communityID`: 小区ID
+
+## 使用示例
+
+完整流程示例：
+```bash
+# 第一步：查询并获取待确认信息
+python3 main.py send_sms_reminder "我的收费系统" "XXX花园" "1栋/1单元/101"
+
+# 第二步：确认发送给全部业主
+python3 main.py confirm_sms_reminder yes
+```
