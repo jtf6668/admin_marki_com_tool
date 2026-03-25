@@ -611,7 +611,7 @@ def get_property_charge_item_id(community_id: str, charge_system_id: str) -> Opt
     if not ck_dict:
         return None
 
-    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
 
     request_body = {
         "index": "",
@@ -737,7 +737,7 @@ def get_charge_item_id_by_name(community_id: str, charge_system_id: str, fee_typ
     if not ck_dict:
         return None
 
-    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
 
     request_body = {
         "index": "",
@@ -886,7 +886,7 @@ def get_community_total_arrears(community_id: str, start_time: int = None, end_t
     if not ck_dict:
         return
 
-    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
 
     params = {
         "id": community_id,
@@ -1009,7 +1009,7 @@ def get_community_custom_range_arrears(community_id: str, start_time: int, end_t
     if not ck_dict:
         return
 
-    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
 
     params = {
         "id": community_id,
@@ -1277,7 +1277,7 @@ def get_deal_log(community_id: str, start_time: int, end_time: int) -> dict:
     if not ck_dict:
         return None
 
-    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
 
     # 使用正确的参数名
     payload = {
@@ -1652,7 +1652,7 @@ def get_outcome_detail_list(community_id: str, start_date_str: str, end_date_str
     if not ck_dict:
         return None
 
-    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
 
     params = {
         "startTimeStr": start_date_str,
@@ -1880,7 +1880,7 @@ def get_ledger_list_v2(community_id: str, cs_id: str, year_month: str, charge_it
     if not ck_dict:
         return None
 
-    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
 
     payload = {
         "type": "1",
@@ -2087,7 +2087,7 @@ def get_community_house_info(community_id: str) -> dict:
     if not ck_dict:
         return None
 
-    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
 
     # 使用较大的时间范围来获取所有数据
     payload = {
@@ -2260,7 +2260,7 @@ def search_household_structure(community_id: str, keyword: str) -> dict:
     if not ck_dict:
         return None
 
-    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
 
     params = {
         "communityID": community_id,
@@ -2816,7 +2816,7 @@ def get_household_arrears(community_id: str, object_id: str, id_type: int, node_
     if not ck_dict:
         return
 
-    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
 
     params = {
         "id": object_id,
@@ -3030,7 +3030,7 @@ def get_household_specific_arrears(community_id: str, object_id: str, id_type: i
     if not ck_dict:
         return
 
-    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
 
     params = {
         "id": object_id,
@@ -3590,7 +3590,7 @@ def send_wechat_payment_reminder(community_id: str, community_name: str = None) 
     if not ck_dict:
         return None
 
-    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
 
     payload = {
         "userTypes": [1],
@@ -3704,7 +3704,7 @@ def send_single_house_sms_reminder(community_id: str, asset_id: int, uids: list,
     if not ck_dict:
         return None
 
-    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
 
     payload = {
         "sendType": 2,
@@ -3991,7 +3991,7 @@ def get_household_arrears_by_id(community_id: str, house_id: str) -> dict:
     if not ck_dict:
         return None
 
-    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
 
     params = {
         "id": house_id,
@@ -4126,7 +4126,7 @@ def get_meter_list(community_id: str, house_id: str) -> dict:
     if not ck_dict:
         return None
 
-    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
 
     params = {
         "publicType": 100,
@@ -4181,7 +4181,7 @@ def get_meter_status(community_id: str, meter_id: str) -> dict:
     if not ck_dict:
         return None
 
-    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
 
     params = {
         "id": meter_id,
@@ -4233,7 +4233,7 @@ def submit_meter_reading(community_id: str, meter_id: str, meter_type: int, cur_
     if not ck_dict:
         return None
 
-    headers = get_headers_with_cookies(ck_dict, {"communityid": community_id})
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
 
     payload = {
         "meterId": meter_id,
@@ -4752,6 +4752,478 @@ def logout() -> str:
     return "已成功登出马克账号。"
 
 
+# === 收款确认缓存相关函数 ===
+def get_payment_confirmation_cache_path():
+    """获取收款确认缓存文件路径"""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), '.payment_confirmation_cache.json')
+
+
+def save_payment_confirmation_cache(cache_data):
+    """保存收款待确认信息到缓存"""
+    cache_path = get_payment_confirmation_cache_path()
+    with open(cache_path, 'w', encoding='utf-8') as f:
+        json.dump(cache_data, f, ensure_ascii=False, indent=2)
+    logger.info("收款确认缓存已保存")
+
+
+def load_payment_confirmation_cache():
+    """从缓存加载收款待确认信息"""
+    cache_path = get_payment_confirmation_cache_path()
+    if not os.path.exists(cache_path):
+        return None
+    try:
+        with open(cache_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"读取收款确认缓存失败: {e}")
+        return None
+
+
+def clear_payment_confirmation_cache():
+    """清除收款确认缓存"""
+    cache_path = get_payment_confirmation_cache_path()
+    if os.path.exists(cache_path):
+        os.remove(cache_path)
+        logger.info("收款确认缓存已清除")
+
+
+# === 支付方式映射 ===
+def get_pay_type_by_name(pay_type_name: str) -> int:
+    """根据支付方式中文名称获取 payType 编码"""
+    mapping = {
+        '现金': 2,
+        '微信': 1,
+        '支付宝': 3,
+    }
+    # 模糊匹配
+    for name, code in mapping.items():
+        if name in pay_type_name:
+            return code
+    # 默认返回现金
+    return 2
+
+
+def get_pay_name_by_type(pay_type: int) -> str:
+    """根据 payType 编码获取中文名称"""
+    mapping = {
+        1: '微信',
+        2: '现金',
+        3: '支付宝',
+    }
+    return mapping.get(pay_type, f'未知({pay_type})')
+
+
+def collect_house_bills(community_id: str, asset_id: str, asset_type: int, node_name: str,
+                       community_name: str, start_time: int, end_time: int, pay_type: int = None):
+    """
+    查询特定房屋的待收款账单列表
+    """
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict)
+
+    # 构建请求负载
+    payload = {
+        "communityID": int(community_id),
+        "assetType": asset_type,
+        "assetId": int(asset_id),
+        "payStatus": 0,  # 0 = 未付
+        "index": "",
+        "selectChargeItemList": [],
+        "selectChargeItemAll": False,
+        "generateStartTime": start_time,
+        "generateEndTime": end_time,
+        "dealLogId": 0,
+        "categoryId": 0,
+        "sortType": 1,
+        "chargeItemVersion": 2,
+        "chargeItemCategorys": []
+    }
+
+    url = f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/getCashierDeskListByIndex"
+
+    try:
+        response = requests.post(
+            url,
+            json=payload,
+            headers=headers,
+            timeout=10
+        )
+    except requests.exceptions.RequestException as e:
+        logger.error(f"查询账单接口调用发生异常: {e}")
+        print(f"接口调用发生异常: {str(e)}")
+        return None
+
+    if response.status_code != 200:
+        logger.error(f"查询账单失败，状态码: {response.status_code}, 响应内容: {response.text}")
+        print(f"查询账单失败，HTTP状态码: {response.status_code}")
+        return None
+
+    data = response.json()
+    if data.get('code') != 0:
+        logger.error(f"查询账单错误: {data.get('msg')}")
+        print(f"查询账单失败：{data.get('msg')}")
+        return None
+
+    result_data = data.get('data', {})
+    bill_list = []
+
+    # 解析账单列表
+    date_list = result_data.get('list', [])
+    for date_item in date_list:
+        for category_data in date_item.get('categoryData', []):
+            for record in category_data.get('records', []):
+                bill_list.append({
+                    'id': record.get('id'),
+                    'version': record.get('version', 0),
+                    'chargeItemName': record.get('chargeItemName', '未知收费项目'),
+                    'date': record.get('date', ''),
+                    'amount': record.get('amount', 0),  # 单位：分
+                })
+
+    if not bill_list:
+        print(f"未找到该房屋在此时间段内的未付账单")
+        print(f"小区：{community_name}")
+        print(f"房屋：{node_name}")
+        print(f"时间范围：{datetime.fromtimestamp(start_time).strftime('%Y-%m-%d')} 至 {datetime.fromtimestamp(end_time).strftime('%Y-%m-%d')}")
+        return None
+
+    # 计算总金额
+    total_amount = sum(bill['amount'] for bill in bill_list)
+
+    # 保存到缓存供确认
+    cache_data = {
+        'community_id': community_id,
+        'community_name': community_name,
+        'asset_id': asset_id,
+        'asset_type': asset_type,
+        'node_name': node_name,
+        'start_time': start_time,
+        'end_time': end_time,
+        'bill_list': bill_list,
+        'total_amount': total_amount,
+        'pay_type': pay_type,
+    }
+    save_payment_confirmation_cache(cache_data)
+
+    # 输出给用户
+    total_amount_yuan = total_amount / 100
+    pay_type_name = get_pay_name_by_type(pay_type) if pay_type else '现金'
+    print(f"\n### 待收款账单信息\n")
+    print(f"**小区**: {community_name}")
+    print(f"**房屋**: {node_name}")
+    print(f"**时间范围**: {datetime.fromtimestamp(start_time).strftime('%Y-%m-%d')} 至 {datetime.fromtimestamp(end_time).strftime('%Y-%m-%d')}")
+    print(f"**支付方式**: {pay_type_name}")
+    print(f"**待收款账单数**: {len(bill_list)} 条")
+    print(f"**总金额**: ¥ {total_amount_yuan:.2f}\n")
+    print("账单列表:")
+    for idx, bill in enumerate(bill_list, 1):
+        amount_yuan = bill['amount'] / 100
+        date_str = f"{bill['date']} " if bill['date'] else ""
+        print(f"{idx}. {date_str}{bill['chargeItemName']} - ¥ {amount_yuan:.2f}")
+    print()
+    print("请确认是否进行收款？")
+    print("- 运行命令 `confirm_payment yes` 收取全部账单")
+    print("- 运行命令 `confirm_payment <序号>`（如`confirm_payment 1`或`confirm_payment 1,2`）只收取指定账单")
+    print("- 运行命令 `confirm_payment no` 取消")
+
+    return cache_data
+
+
+def collect_house_bills_by_name(charge_system_name=None, community_name=None, keyword=None,
+                               start_date_str=None, end_date_str=None, pay_type_name=None):
+    """
+    通过名称对特定房屋指定时间范围的账单进行收款（智能匹配模式）
+    """
+    # 1. 获取收费系统
+    system_map = get_user_charge_systems(return_map=True)
+    if not system_map:
+        print("获取收费系统列表失败")
+        return
+    if charge_system_name not in system_map:
+        print(f"未找到收费系统：{charge_system_name}")
+        print("可用的收费系统：" + ", ".join(system_map.keys()))
+        return
+    charge_system_id = system_map[charge_system_name]
+    print(f"找到收费系统：{charge_system_name}")
+
+    # 2. 搜索小区
+    community_map = search_community(charge_system_id, community_name, return_map=True)
+    if not community_map:
+        print(f"未找到匹配的小区：{community_name}")
+        return
+    if len(community_map) > 1:
+        print(f"找到多个匹配的小区，请选择：")
+        for name in community_map.keys():
+            print(f"  - {name}")
+        return
+    # 只有一个匹配，直接使用
+    community_name_found = list(community_map.keys())[0]
+    community_id = community_map[community_name_found]
+    print(f"找到小区：{community_name_found}")
+
+    # 3. 解析日期
+    try:
+        if start_date_str:
+            start_date = parse_iso_date(start_date_str)
+            start_time = int(datetime.combine(start_date, datetime.min.time()).timestamp())
+        else:
+            # 默认本月开始
+            today = datetime.today()
+            start_time = int(datetime(today.year, today.month, 1).timestamp())
+            start_date_str = datetime.fromtimestamp(start_time).strftime('%Y-%m-%d')
+
+        if end_date_str:
+            end_date = parse_iso_date(end_date_str)
+            end_time = int(datetime.combine(end_date, datetime.max.time()).timestamp())
+        else:
+            # 默认今天结束
+            today = datetime.today()
+            end_time = int(datetime.combine(today, datetime.max.time()).timestamp())
+            end_date_str = datetime.fromtimestamp(end_time).strftime('%Y-%m-%d')
+    except ValueError as e:
+        print(f"日期解析错误: {e}")
+        print("请使用 YYYY-MM-DD 格式，比如 2026-03-01")
+        return
+
+    # 4. 加载匹配缓存
+    cache_data = load_match_cache()
+    selected_node = None
+
+    # 检查缓存中是否有可用的匹配结果（用户选择场景）
+    if cache_data and str(cache_data.get('community_id')) == str(community_id):
+        cached_nodes = cache_data.get('nodes', [])
+        if cached_nodes:
+            # 尝试解析用户选择
+            selected_node = parse_user_selection(keyword, cached_nodes)
+            if selected_node:
+                logger.info(f"用户选择了: {selected_node.get('full_name')}")
+                # 清除缓存
+                clear_match_cache()
+                # 检查是否是房屋级别
+                if selected_node['level'] != 'house':
+                    print(f"请选择具体的房屋进行收款，当前选择的是{selected_node['full_name']}（{selected_node['level']}）")
+                    return
+                # 继续处理
+                node_id = str(selected_node['id'])
+                node_name = selected_node['full_name']
+                asset_type = 1  # 房屋固定为1
+
+                # 解析支付方式
+                if pay_type_name:
+                    pay_type = get_pay_type_by_name(pay_type_name)
+                else:
+                    pay_type = 2  # 默认现金
+                logger.info(f"支付方式: {pay_type_name}, 编码: {pay_type}")
+                logger.info(f"已选择房屋: {node_name}, ID: {node_id}")
+
+                # 5. 查询账单
+                collect_house_bills(str(community_id), node_id, asset_type, node_name, community_name_found, start_time, end_time, pay_type)
+                return
+            else:
+                # 解析失败，清除缓存，按新关键词重新搜索
+                logger.info("无法解析用户选择，清除缓存并重新搜索")
+                clear_match_cache()
+
+    # 清理关键词
+    clean_keyword = keyword.replace("收款", "").replace("账单", "").replace("的", "").strip()
+
+    # 检查是否使用精确匹配（包含 / 分隔符）
+    use_exact_match = "/" in clean_keyword
+
+    # 获取完整房屋结构
+    household_data = search_household_structure(str(community_id), "")
+    if household_data is None:
+        print("搜索房屋结构失败")
+        return
+
+    # 找出匹配的节点
+    if use_exact_match:
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, exact_match=True)
+        if not matching_nodes:
+            logger.info("精确匹配未找到结果，使用模糊匹配")
+            keywords = clean_keyword.split("/")
+            search_kw = keywords[-1] if keywords else clean_keyword
+            household_data_for_search = search_household_structure(str(community_id), search_kw)
+            matching_nodes = find_matching_nodes(household_data_for_search, clean_keyword, exact_match=False, relaxed_match=True)
+    else:
+        # 模糊匹配
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, exact_match=False, relaxed_match=True)
+
+    if not matching_nodes:
+        # 宽松匹配也没找到，尝试宽松匹配整个关键词
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, exact_match=False, relaxed_match=True)
+        if not matching_nodes:
+            print("未找到任何匹配的房屋，请检查关键词重试")
+            return
+
+    if len(matching_nodes) == 1:
+        # 只有一个匹配，直接使用
+        selected_node = matching_nodes[0]
+        if selected_node['level'] != 'house':
+            print(f"匹配结果不是房屋，当前匹配到的是 {selected_node['level']}：{selected_node['full_name']}")
+            print("请提供更精确的关键词匹配到具体房屋")
+            return
+
+        clear_match_cache()
+        node_id = str(selected_node['id'])
+        node_name = selected_node['full_name']
+        asset_type = 1  # 房屋固定为1
+
+        # 解析支付方式
+        if pay_type_name:
+            pay_type = get_pay_type_by_name(pay_type_name)
+        else:
+            pay_type = 2  # 默认现金
+        logger.info(f"支付方式: {pay_type_name}, 编码: {pay_type}")
+        logger.info(f"已选择房屋: {node_name}, ID: {node_id}")
+
+        # 5. 查询账单
+        collect_house_bills(str(community_id), node_id, asset_type, node_name, community_name_found, start_time, end_time, pay_type)
+    else:
+        # 多个匹配，保存到缓存让用户选择
+        save_match_cache(community_id, matching_nodes)
+        print(f"找到多个匹配，请选择：")
+        for idx, node in enumerate(matching_nodes, 1):
+            print(f"{idx}. {node['full_name']} ({node['level']})")
+        return
+
+
+def confirm_payment_collection(confirmation_input: str, pay_type_name: str = None):
+    """
+    处理用户确认，执行收款
+    """
+    # 加载缓存
+    cache_data = load_payment_confirmation_cache()
+    if not cache_data:
+        print("没有待确认的收款，请先运行 collect_payment 查询账单")
+        return
+
+    if confirmation_input.lower() == 'no':
+        print("已取消收款")
+        clear_payment_confirmation_cache()
+        return
+
+    community_id = cache_data['community_id']
+    community_name = cache_data['community_name']
+    asset_id = cache_data['asset_id']
+    asset_type = cache_data['asset_type']
+    node_name = cache_data['node_name']
+    all_bills = cache_data['bill_list']
+
+    # 解析用户选择
+    selected_bills = []
+    if confirmation_input.lower() == 'yes':
+        # 全部选择
+        selected_bills = all_bills
+    else:
+        # 按序号选择，支持逗号分隔，如 1,2
+        try:
+            # 处理中文逗号
+            confirmation_input = confirmation_input.replace('，', ',')
+            indices = [int(idx.strip()) - 1 for idx in confirmation_input.split(',') if idx.strip()]
+            for idx in indices:
+                if 0 <= idx < len(all_bills):
+                    selected_bills.append(all_bills[idx])
+        except ValueError:
+            print("序号解析错误，请使用 yes/no 或数字序号（如 1 或 1,2）")
+            return
+
+    if not selected_bills:
+        print("没有选中任何账单，请重新选择或确认取消")
+        return
+
+    # 计算总金额
+    total_amount = sum(bill['amount'] for bill in selected_bills)
+
+    # 获取支付类型编码，优先使用缓存中的，如果没有则使用参数（兼容旧调用）
+    cached_pay_type = cache_data.get('pay_type')
+    if cached_pay_type:
+        pay_type = cached_pay_type
+    elif pay_type_name:
+        pay_type = get_pay_type_by_name(pay_type_name)
+    else:
+        # 默认现金
+        pay_type = 2
+
+    pay_type_name = get_pay_name_by_type(pay_type)
+
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict)
+
+    # 构建 billInfos
+    bill_infos = [{'id': bill['id'], 'version': bill['version']} for bill in selected_bills]
+
+    # 当前时间戳
+    pay_time = int(datetime.now().timestamp())
+
+    # 构建请求负载
+    payload = {
+        "communityID": int(community_id),
+        "payType": pay_type,
+        "payTime": pay_time,
+        "billInfos": bill_infos,
+        "assetType": asset_type,
+        "assetId": int(asset_id),
+        "amount": total_amount,
+        "houseId": int(asset_id),
+        "depositCheck": {
+            "depositPayAmount": total_amount,
+            "leftPayAmount": 0
+        },
+        "version": 3
+    }
+
+    url = f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/addBillPayV2"
+
+    try:
+        response = requests.post(
+            url,
+            json=payload,
+            headers=headers,
+            timeout=10
+        )
+    except requests.exceptions.RequestException as e:
+        logger.error(f"收款接口调用发生异常: {e}")
+        print(f"接口调用发生异常: {str(e)}")
+        return None
+
+    if response.status_code != 200:
+        logger.error(f"收款失败，状态码: {response.status_code}, 响应内容: {response.text}")
+        print(f"收款失败，HTTP状态码: {response.status_code}")
+        return None
+
+    data = response.json()
+    if data.get('code') != 0:
+        logger.error(f"收款错误: {data.get('msg')}")
+        print(f"收款失败：{data.get('msg')}")
+        return None
+
+    # 收款成功
+    pay_time_str = datetime.fromtimestamp(pay_time).strftime('%Y-%m-%d %H:%M:%S')
+    total_amount_yuan = total_amount / 100
+
+    print(f"\n✓ 收款成功！\n")
+    print(f"**小区**: {community_name}")
+    print(f"**房屋**: {node_name}")
+    print(f"**支付方式**: {pay_type_name}")
+    print(f"**收款账单数**: {len(selected_bills)} 条")
+    print(f"**总金额**: ¥ {total_amount_yuan:.2f}")
+    print(f"**交易时间**: {pay_time_str}")
+
+    logger.info(f"收款成功，小区: {community_name}, 房屋: {node_name}, 账单数: {len(selected_bills)}, 总金额: {total_amount_yuan:.2f}")
+
+    # 清除缓存
+    clear_payment_confirmation_cache()
+
+    return data
+
+
 if __name__ == "__main__":
     command = sys.argv[1] if len(sys.argv) > 1 else ""
 
@@ -5087,6 +5559,56 @@ if __name__ == "__main__":
         else:
             confirmation_input = sys.argv[2]
             confirm_sms_reminder(confirmation_input)
+    elif command == "collect_payment":
+        # 对特定房屋指定时间范围的账单进行收款（推荐，智能匹配）
+        if len(sys.argv) < 4:
+            print("错误：请提供收费系统名称、小区名称和房屋关键词")
+            print("用法: python3 main.py collect_payment <收费系统名称> <小区名称> <房屋关键词> [开始日期] [结束日期] [支付方式]")
+            print("日期格式: YYYY-MM-DD")
+            print("支持支付方式: 现金、微信、支付宝（默认现金）")
+            print("示例: python3 main.py collect_payment 收费系统 小区 1栋/1单元/101 2026-03-01 2026-03-31 现金")
+            print("示例（默认本月）: python3 main.py collect_payment 收费系统 小区 1栋/1单元/101 现金")
+        else:
+            charge_system_name = sys.argv[2]
+            community_name = sys.argv[3]
+            keyword = sys.argv[4]
+
+            # 处理可选参数：开始日期、结束日期、支付方式
+            start_date_str = None
+            end_date_str = None
+            pay_type_name = None
+
+            # len(sys.argv) = 5: collect_payment cs community keyword
+            # len(sys.argv) = 6: collect_payment cs community keyword pay_type
+            # len(sys.argv) = 7: collect_payment cs community keyword start end
+            # len(sys.argv) = 8: collect_payment cs community keyword start end pay_type
+
+            if len(sys.argv) == 6:
+                # collect_payment cs community keyword pay_type
+                # 这种情况默认使用本月
+                pay_type_name = sys.argv[5]
+            elif len(sys.argv) == 7:
+                # 只有开始日期没有结束日期，不完整
+                print("错误：如果提供了开始日期，必须同时提供结束日期")
+                print("用法: python3 main.py collect_payment <收费系统名称> <小区名称> <房屋关键词> [开始日期] [结束日期] [支付方式]")
+            elif len(sys.argv) >= 7:
+                start_date_str = sys.argv[5]
+                end_date_str = sys.argv[6]
+                if len(sys.argv) >= 8:
+                    pay_type_name = sys.argv[7]
+
+            collect_house_bills_by_name(charge_system_name, community_name, keyword, start_date_str, end_date_str, pay_type_name)
+    elif command == "confirm_payment":
+        # 确认收款，处理用户选择
+        if len(sys.argv) < 3:
+            print("错误：请提供确认选项（yes/no 或序号）")
+            print("用法: python3 main.py confirm_payment <yes/no/序号>")
+            print("示例: python3 main.py confirm_payment yes")
+            print("示例: python3 main.py confirm_payment 1")
+            print("示例: python3 main.py confirm_payment 1,2")
+        else:
+            confirmation_input = sys.argv[2]
+            confirm_payment_collection(confirmation_input)
     else:
         print("错误：未知的指令或参数不足")
         print("可用指令:")
@@ -5122,3 +5644,5 @@ if __name__ == "__main__":
         print("  send_sms_reminder <收费系统名称> <小区名称> <房屋关键词> - 单个房屋短信催缴（推荐，智能匹配）")
         print("  confirm_sms_reminder <yes/no/序号> - 确认短信催缴发送处理")
         print("  send_single_house_sms_reminder <小区ID> <房屋ID> <业主ID逗号分隔> <账单ID逗号分隔> - 单个房屋短信催缴（ID模式，备用）")
+        print("  collect_payment <收费系统名称> <小区名称> <房屋关键词> [开始日期] [结束日期] [支付方式] - 对特定房屋指定时间范围的账单进行收款（推荐，智能匹配）")
+        print("  confirm_payment <yes/no/序号> - 确认收款，处理用户选择")
