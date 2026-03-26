@@ -12,7 +12,7 @@ from utils import SessionManager
 from logger import logger
 
 
-API_BASE_URL = "https://admin-api.markiapp.com"
+API_BASE_URL = "https://admin-api-test.markiapp.com"
 CHARGE_API_BASE_URL = "https://charge-api-test.markiapp.com"
 BASE_DOMAIN = "markiapp.com"
 #AUTH_URL = f"https://os-lgn.{BASE_DOMAIN}/lgn/login/authorize.do" # 生产环境
@@ -149,6 +149,65 @@ def clear_sms_confirmation():
             logger.info("已清除短信催缴确认缓存")
         except Exception as e:
             logger.warning(f"清除短信催缴确认缓存失败: {e}")
+
+
+# === 催缴工单确认缓存相关函数 ===
+def get_work_order_confirmation_cache_path():
+    """获取催缴工单确认缓存文件路径"""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_dir, '.work_order_confirmation_cache.json')
+
+
+def save_work_order_confirmation(data):
+    """保存催缴工单确认数据到缓存"""
+    cache_data = {
+        "timestamp": time.time(),
+        "data": data
+    }
+    try:
+        with open(get_work_order_confirmation_cache_path(), 'w', encoding='utf-8') as f:
+            json.dump(cache_data, f, ensure_ascii=False, indent=2)
+        logger.info(f"已保存催缴工单确认数据")
+    except Exception as e:
+        logger.warning(f"保存催缴工单确认数据失败: {e}")
+
+
+def load_work_order_confirmation():
+    """从缓存加载催缴工单确认数据（5分钟内有效）
+
+    Returns:
+        dict: 确认数据或 None
+    """
+    cache_path = get_work_order_confirmation_cache_path()
+    if not os.path.exists(cache_path):
+        return None
+
+    try:
+        with open(cache_path, 'r', encoding='utf-8') as f:
+            cache_data = json.load(f)
+
+        # 检查是否过期（5分钟）
+        if time.time() - cache_data.get('timestamp', 0) > 300:
+            logger.info("催缴工单确认缓存已过期")
+            clear_work_order_confirmation()
+            return None
+
+        logger.info(f"从缓存加载了催缴工单确认数据")
+        return cache_data.get('data')
+    except Exception as e:
+        logger.warning(f"加载催缴工单确认数据失败: {e}")
+        return None
+
+
+def clear_work_order_confirmation():
+    """清除催缴工单确认缓存"""
+    cache_path = get_work_order_confirmation_cache_path()
+    if os.path.exists(cache_path):
+        try:
+            os.remove(cache_path)
+            logger.info("已清除催缴工单确认缓存")
+        except Exception as e:
+            logger.warning(f"清除催缴工单确认缓存失败: {e}")
 
 
 # === 用户选择解析函数 ===
@@ -3295,6 +3354,7 @@ def format_cs_init_info(raw_response) -> str:
 
     data = res.get('data', {})
     community_info = data.get('communityInfo', {})
+
     cs_info = data.get('csInfo', {})
     user_info_data = data.get('userInfo', {}).get('data', {})
 
@@ -3303,6 +3363,7 @@ def format_cs_init_info(raw_response) -> str:
     # 用户信息
     output.append("**用户信息**:")
     if user_info_data:
+
         output.append(f"- 昵称: {user_info_data.get('nick', '')}")
         output.append(f"- 真实姓名: {user_info_data.get('real_nick', '')}")
         output.append(f"- 手机号: {user_info_data.get('phone', '')}")
@@ -5276,6 +5337,242 @@ def generate_web_bill_share_url(community_id: int, asset_id: int, bill_ids: list
         return None
 
 
+def check_user_in_team(teamID: int) -> bool:
+    """
+    检查当前用户是否在指定团队中
+
+    Args:
+        teamID: 团队ID
+
+    Returns:
+        bool: True = 在团队中，False = 不在团队中
+    """
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return False
+
+    headers = get_headers_with_cookies(ck_dict)
+
+    import random
+    params = {
+        "teamID": int(teamID),
+        "r": random.random()
+    }
+
+    try:
+        response = requests.get(
+            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Team/checkInTeamT",
+            params=params,
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"检查用户团队成员资格失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            return False
+
+        response.raise_for_status()
+        data = response.json()
+
+        # inTeam 直接在根级别（实际API返回格式），也兼容data里面的情况
+        in_team = data.get('inTeam', False)
+        if not in_team:
+            in_team = data.get('data', {}).get('inTeam', False)
+        logger.info(f"用户团队检查结果: teamID={teamID}, inTeam={in_team}")
+        return in_team
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"检查用户团队成员资格发生异常: {e}")
+        return False
+
+
+def add_charge_notice(community_id: int, asset_id: int, bill_ids: list) -> dict:
+    """
+    添加支付通知（用于生成工单）
+
+    Args:
+        community_id: 小区ID
+        asset_id: 房屋ID
+        bill_ids: 账单ID列表
+
+    Returns:
+        dict: API响应数据，包含orderID
+    """
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
+
+    payload = {
+        "communityID": int(community_id),
+        "assetType": 1,
+        "assetId": int(asset_id),
+        "ids": bill_ids
+    }
+
+    try:
+        response = requests.post(
+            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/addChargeNotice",
+            json=payload,
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"添加支付通知失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            return None
+
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get('code') != 0:
+            logger.error(f"添加支付通知失败: {data.get('msg')}")
+            return None
+
+        logger.info(f"成功添加支付通知，小区ID: {community_id}, 房屋ID: {asset_id}, orderID: {data.get('data', {}).get('orderID')}")
+        return data
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"添加支付通知发生异常: {e}")
+        return None
+
+
+def get_team_members(teamID: int) -> list:
+    """
+    获取团队成员列表
+
+    Args:
+        teamID: 团队ID
+
+    Returns:
+        list: 成员列表，每个元素包含 userID, nickname, phone
+    """
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict)
+
+    import random
+    params = {
+        "teamID": int(teamID),
+        "page": 1,
+        "pageSize": 100,
+        "keyword": "",
+        "memberType": "1,2,3",
+        "r": random.random()
+    }
+
+    try:
+        response = requests.get(
+            f"{API_BASE_URL}/mkg/api/v1/Organize/getMemberT",
+            params=params,
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"获取团队成员列表失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            return None
+
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get('code') != 0:
+            logger.error(f"获取团队成员列表失败: {data.get('msg')}")
+            return None
+
+        # items 直接在根级别
+        items = data.get('items', [])
+        # 如果找不到，再尝试从 data 获取（兼容两种格式）
+        if not items:
+            items = data.get('data', {}).get('items', [])
+        logger.info(f"成功获取团队成员列表，teamID={teamID}, 成员数={len(items)}")
+        return items
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"获取团队成员列表发生异常: {e}")
+        return None
+
+
+def generate_charge_work_order(
+    teamID: int,
+    community_id: int,
+    asset_id: int,
+    order_id: int,
+    share_url: str,
+    worker_uids: list
+) -> dict:
+    """
+    生成催缴工单
+
+    Args:
+        teamID: 团队ID
+        community_id: 小区ID
+        asset_id: 房屋ID
+        order_id: 支付通知ID
+        share_url: 催缴分享链接
+        worker_uids: 代办人用户ID列表
+
+    Returns:
+        dict: API响应数据
+    """
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
+
+    import time
+    current_timestamp = int(time.time())
+
+    payload = {
+        "teamID": int(teamID),
+        "content": f"【催费任务】，业主缴费链接：{share_url}",
+        "startTime": current_timestamp,
+        "handModel": 2,
+        "workerTeamId": int(teamID),
+        "workerUids": worker_uids,
+        "woTagList": [],
+        "attachs": [],
+        "media": [],
+        "selectAll": False,
+        "informTeamId": None,
+        "from": 5,
+        "communityID": int(community_id),
+        "assetType": 1,
+        "assetId": int(asset_id),
+        "orderId": int(order_id)
+    }
+
+    try:
+        response = requests.post(
+            f"{API_BASE_URL}/mkg/api/v2/Charge/addChargeWorkOrder",
+            json=payload,
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"生成催缴工单失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            return None
+
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get('code') != 0:
+            logger.error(f"生成催缴工单失败: {data.get('msg')}")
+            return None
+
+        logger.info(f"成功生成催缴工单，teamID={teamID}, communityID={community_id}, assetId={asset_id}")
+        return data
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"生成催缴工单发生异常: {e}")
+        return None
+
+
 def _process_generate_collection_url(community_id: str, house_node: dict, community_name: str):
     """
     内部函数：处理生成催缴链接流程
@@ -5487,6 +5784,436 @@ def generate_collection_url_by_name(charge_system_name=None, community_name=None
                 'house': '房屋'
             }.get(node['level'], '未知')
             print(f"{idx}. {node['name']} ({level_label})")
+
+
+def _process_generate_charge_work_order(community_id: str, house_node: dict, community_name: str, charge_system_id: str):
+    """
+    内部函数：处理生成催缴工单流程
+
+    Args:
+        community_id: 小区ID
+        house_node: 房屋节点
+        community_name: 小区名称
+        charge_system_id: 收费系统ID
+    """
+    house_id = house_node['id']
+    house_name = house_node['name']
+
+    print(f"已选择房屋：{house_name}")
+
+    # 获取小区收费系统初始化信息，从中提取团队ID
+    print(f"正在获取团队信息...")
+    init_info_result = get_community_cs_init_info(community_id, charge_system_id, None)
+    if not init_info_result:
+        print("获取小区初始化信息失败，无法继续")
+        return
+
+    # 解析团队ID：从csInfo.bindItemID获取
+    try:
+        # 重新调用API获取原始数据，因为上面的函数返回格式化文本
+        import random
+        ck_dict = ensure_authenticated()
+        if not ck_dict:
+            return None
+
+        headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
+        params = {
+            "communityID": int(community_id),
+            "csID": int(charge_system_id),
+            "r": random.random()
+        }
+        response = requests.get(
+            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/getCsInitInfo",
+            params=params,
+            headers=headers,
+            timeout=10
+        )
+        if response.status_code != 200:
+            print(f"获取团队ID失败，状态码: {response.status_code}")
+            return
+        data = response.json()
+        if data.get('code') != 0:
+            print(f"获取团队ID失败: {data.get('msg')}")
+            return
+        cs_info = data.get('data', {}).get('csInfo', {})
+        team_id = cs_info.get('bindItemID')
+        if not team_id:
+            print(f"无法获取团队ID，请确认收费系统已正确绑定团队")
+            return
+        team_id = int(team_id)
+        print(f"已绑定团队ID: {team_id}")
+    except Exception as e:
+        logger.error(f"解析团队ID失败: {e}")
+        print(f"解析团队ID失败: {e}")
+        return
+
+    # 查询欠费信息获取账单ID
+    arrears_data = get_household_arrears_by_id(community_id, str(house_id))
+    if not arrears_data:
+        print("查询欠费信息失败")
+        return
+
+    arrears_list = arrears_data.get('data', [])
+    if not arrears_list:
+        print(f"该房屋当前无欠费，无法生成催缴工单")
+        return
+
+    # 提取所有账单ID
+    # 从每个欠费项的 idStr 拆分逗号分隔
+    bill_ids = []
+    for arrear in arrears_list:
+        id_str = arrear.get('idStr', '')
+        if id_str:
+            for bill_id_str in id_str.split(','):
+                bill_id_str = bill_id_str.strip()
+                if bill_id_str and bill_id_str.isdigit():
+                    bill_ids.append(int(bill_id_str))
+
+    if not bill_ids:
+        print(f"未找到该房屋的欠费账单ID，无法生成催缴工单")
+        return
+
+    # 获取房屋ID（assetId）- 从第一个欠费项获取
+    first_arrear = arrears_list[0]
+    house_info = first_arrear.get('houseInfo', {})
+    asset_id = house_info.get('id')
+    if not asset_id:
+        print("无法获取房屋ID信息")
+        return
+    asset_id = int(asset_id)
+    community_id_int = int(community_id)
+
+    # 检查当前用户是否在团队中
+    print(f"正在检查用户团队权限...")
+    if not check_user_in_team(team_id):
+        print(f"\n✗ 当前用户不在该收费系统绑定的团队（ID: {team_id}）中")
+        print(f"请先加入团队后再生成催缴工单")
+        return
+
+    # 调用 API 生成催缴链接（复用已有函数）
+    print(f"正在生成催缴链接...")
+    url_result = generate_web_bill_share_url(community_id_int, asset_id, bill_ids)
+    if not url_result:
+        print(f"\n✗ 生成催缴链接失败，无法继续生成工单")
+        return
+    share_text = url_result.get('data', {}).get('text', '')
+    # 从分享文本中提取第一个URL链接
+    import re
+    url_matches = re.findall(r'https?://[^\s]+', share_text)
+    if url_matches:
+        # 取第一个URL
+        share_url = url_matches[0]
+    else:
+        # 如果没找到，直接用整个文本（不应该发生）
+        share_url = share_text
+
+    # 调用 API 添加支付通知
+    print(f"正在添加支付通知...")
+    notice_result = add_charge_notice(community_id_int, asset_id, bill_ids)
+    if not notice_result:
+        print(f"\n✗ 添加支付通知失败，请查看日志获取详细信息")
+        return
+    order_id = notice_result.get('data', {}).get('orderID')
+    if not order_id:
+        print(f"\n✗ 未获取到支付通知ID，请查看日志获取详细信息")
+        return
+    # API要求 orderId 是字符串类型
+    order_id = str(order_id)
+
+    # 获取团队成员列表
+    print(f"正在获取团队成员列表...")
+    members = get_team_members(team_id)
+    if members is None:
+        print(f"\n✗ 获取团队成员列表失败，请查看日志获取详细信息")
+        return
+    if not members:
+        print(f"\n✗ 团队中没有找到成员，请检查团队配置")
+        return
+
+    # 保存待确认数据到缓存
+    pending_data = {
+        "teamID": team_id,
+        "community_id": community_id_int,
+        "asset_id": asset_id,
+        "community_name": community_name,
+        "house_name": house_name,
+        "bill_ids": bill_ids,
+        "share_url": share_url,
+        "order_id": order_id,
+        "members_list": members
+    }
+    save_work_order_confirmation(pending_data)
+
+    # 输出成员列表供用户选择
+    print(f"\n### 请选择代办人")
+    print(f"\n**小区**: {community_name}")
+    print(f"**房屋**: {house_name}")
+    print(f"**欠费账单数**: {len(bill_ids)} 条")
+    print(f"\n请选择指定序号的团队成员作为代办人：")
+    print()
+    for idx, member in enumerate(members, 1):
+        nickname = member.get('nickname', '未知')
+        phone = member.get('phone', '')
+        user_id = member.get('userID', '')
+        display_name = nickname
+        if phone:
+            display_name = f"{nickname} ({phone})"
+        print(f"  {idx}. {display_name} - 用户ID: {user_id}")
+    print()
+    print(f"请运行命令确认选择：")
+    print(f"  python3 main.py confirm_charge_work_order <序号>")
+    print(f"示例：python3 main.py confirm_charge_work_order 1")
+    print(f"支持多选：python3 main.py confirm_charge_work_order 1,2")
+    logger.info(f"已生成待确认催缴工单，等待用户选择代办人: community={community_name}, house={house_name}")
+
+
+def generate_charge_work_order_by_name(charge_system_name=None, community_name=None, keyword=None):
+    """
+    通过名称智能匹配房屋并生成催缴工单（两步完成）
+
+    Args:
+        charge_system_name: 收费系统名称
+        community_name: 小区名称
+        keyword: 房屋位置关键词
+    """
+    # 检查必要参数
+    if not charge_system_name:
+        print("NEED_INFO: 请提供收费系统名称")
+        print("提示：可以先使用 list_charge_systems 命令查看可用的收费系统")
+        return
+
+    if not community_name:
+        print("NEED_INFO: 请提供小区名称")
+        return
+
+    if not keyword:
+        print("NEED_INFO: 请提供房屋位置关键词（如楼栋/单元/房屋号）")
+        return
+
+    # 获取收费系统映射
+    system_map = get_user_charge_systems(return_map=True)
+    if not system_map:
+        print("获取收费系统列表失败")
+        return
+
+    # 查找收费系统 ID
+    charge_system_id = system_map.get(charge_system_name)
+    if not charge_system_id:
+        print(f"未找到收费系统：{charge_system_name}")
+        print("可用的收费系统：" + ", ".join(system_map.keys()))
+        return
+
+    # 搜索小区
+    community_map = search_community(charge_system_id, community_name, return_map=True)
+    if community_map is None:
+        print("搜索小区失败")
+        return
+
+    if not community_map:
+        print(f"未找到匹配的小区：{community_name}")
+        return
+
+    if len(community_map) > 1:
+        # 多个匹配，列出供用户选择
+        print(f"找到多个匹配的小区，请使用完整的小区名称重新查询：")
+        for name in community_map.keys():
+            print(f"  - {name}")
+        return
+
+    # 只有一个匹配，继续处理
+    comm_name, comm_id = next(iter(community_map.items()))
+    print(f"找到小区：{comm_name}")
+
+    # 先尝试从缓存加载上一次的匹配列表
+    cache_data = load_match_cache()
+    if cache_data and str(cache_data.get('community_id')) == str(comm_id):
+        cached_nodes = cache_data.get('nodes', [])
+        if cached_nodes:
+            # 尝试解析用户选择
+            selected_node = parse_user_selection(keyword, cached_nodes)
+            if selected_node:
+                logger.info(f"用户选择了: {selected_node.get('name')}")
+                # 清除缓存
+                clear_match_cache()
+                # 检查是否是房屋级别
+                if selected_node['level'] != 'house':
+                    print(f"请选择具体的房屋生成催缴工单，当前选择的是{selected_node['name']}（{selected_node['level']}）")
+                    return
+                # 继续处理
+                return _process_generate_charge_work_order(str(comm_id), selected_node, comm_name, charge_system_id)
+            else:
+                # 解析失败，清除缓存，按新关键词重新搜索
+                logger.info("无法解析用户选择，清除缓存并重新搜索")
+                clear_match_cache()
+
+    # 清理关键词
+    clean_keyword = keyword.replace("工单", "").replace("催缴", "").replace("的", "").strip()
+
+    # 检查是否使用精确匹配
+    use_exact_match = "/" in clean_keyword
+
+    # 获取完整房屋结构
+    household_data = search_household_structure(str(comm_id), "")
+
+    if household_data is None:
+        print("搜索房屋结构失败")
+        return
+
+    # 找出匹配的节点
+    if use_exact_match:
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, exact_match=True)
+        if not matching_nodes:
+            logger.info("精确匹配未找到结果，使用模糊匹配")
+            keywords = clean_keyword.split("/")
+            search_kw = keywords[-1] if keywords else clean_keyword
+            household_data_for_search = search_household_structure(str(comm_id), search_kw)
+            if household_data_for_search:
+                household_data = household_data_for_search
+            matching_nodes = find_matching_nodes(household_data, clean_keyword)
+    else:
+        keywords = split_keywords(clean_keyword)
+        search_kw = keywords[-1] if keywords else clean_keyword
+        household_data_for_search = search_household_structure(str(comm_id), search_kw)
+        if household_data_for_search:
+            household_data = household_data_for_search
+        matching_nodes = find_matching_nodes(household_data, clean_keyword)
+
+    if not matching_nodes:
+        # 尝试宽松匹配
+        logger.info(f"严格匹配未找到，尝试宽松匹配: {clean_keyword}")
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, relaxed_match=True)
+
+    if not matching_nodes:
+        # 仍然没找到，生成候选列表
+        logger.info(f"宽松匹配也未找到，生成候选列表")
+        candidates = generate_candidates(household_data, clean_keyword)
+        if candidates:
+            print_candidates(clean_keyword, candidates)
+        else:
+            print(f"未找到与'{clean_keyword}'匹配的楼栋/单元/房屋，请确认输入是否正确")
+        return
+
+    if len(matching_nodes) == 1:
+        node = matching_nodes[0]
+        if node['level'] != 'house':
+            print(f"请选择具体的房屋生成催缴工单，当前选择的是{node['name']}（{node['level']}）")
+            return
+        return _process_generate_charge_work_order(str(comm_id), node, comm_name, charge_system_id)
+    else:
+        save_match_cache(comm_id, matching_nodes)
+        print("MULTI_MATCH:")
+        for idx, node in enumerate(matching_nodes, 1):
+            level_label = {
+                'building': '楼栋',
+                'unit': '单元',
+                'house': '房屋'
+            }.get(node['level'], '未知')
+            print(f"{idx}. {node['name']} ({level_label})")
+
+
+def confirm_charge_work_order(selection_input: str):
+    """
+    确认生成催缴工单，处理用户对代办人的选择
+
+    Args:
+        selection_input: 用户选择的序号字符串，支持单个 "1" 或多个 "1,2"
+    """
+    # 从缓存加载待确认数据
+    pending_data = load_work_order_confirmation()
+    if not pending_data:
+        print("没有待确认的催缴工单数据，或数据已过期，请重新开始流程")
+        print("请先运行：python3 main.py generate_charge_work_order <收费系统名称> <小区名称> <房屋关键词>")
+        return
+
+    # 获取成员列表
+    members = pending_data.get('members_list', [])
+    if not members:
+        print("缓存数据中没有成员信息，请重新开始流程")
+        clear_work_order_confirmation()
+        return
+
+    # 解析用户选择
+    # 支持："1", "1,2", "1, 2" 等格式
+    selected_indices = []
+    try:
+        # 分割并去除空格
+        for part in selection_input.replace('，', ',').split(','):
+            part = part.strip()
+            if part:
+                idx = int(part)
+                if idx < 1 or idx > len(members):
+                    print(f"序号 {idx} 超出范围，请输入 1 到 {len(members)} 之间的序号")
+                    return
+                selected_indices.append(idx - 1)  # 转成0-based索引
+    except ValueError:
+        print(f"无法解析选择：{selection_input}，请输入数字序号如 '1' 或 '1,2'")
+        return
+
+    if not selected_indices:
+        print(f"未选择任何代办人，请重新输入")
+        return
+
+    # 提取选中的代办人用户ID
+    selected_members = []
+    selected_user_ids = []
+    for idx in selected_indices:
+        member = members[idx]
+        selected_members.append(member)
+        user_id = member.get('userID')
+        if user_id:
+            selected_user_ids.append(int(user_id))
+
+    if not selected_user_ids:
+        print(f"无法获取选中成员的用户ID，请重新开始流程")
+        clear_work_order_confirmation()
+        return
+
+    # 调用API生成工单
+    print(f"正在生成催缴工单...")
+    logger.info(f"开始生成催缴工单，选中 {len(selected_user_ids)} 个代办人")
+
+    result = generate_charge_work_order(
+        teamID=pending_data['teamID'],
+        community_id=pending_data['community_id'],
+        asset_id=pending_data['asset_id'],
+        order_id=pending_data['order_id'],
+        share_url=pending_data['share_url'],
+        worker_uids=selected_user_ids
+    )
+
+    if not result:
+        print(f"\n✗ 生成催缴工单失败，请查看日志获取详细信息")
+        return
+
+    # 生成成功，输出结果
+    # 清除缓存
+    clear_work_order_confirmation()
+
+    # 准备显示信息
+    selected_names = []
+    for member in selected_members:
+        nickname = member.get('nickname', '未知')
+        phone = member.get('phone', '')
+        if phone:
+            display = f"{nickname} ({phone})"
+        else:
+            display = nickname
+        selected_names.append(display)
+
+    print(f"\n✅ 催缴工单生成成功！\n")
+    print(f"**小区**: {pending_data['community_name']}")
+    print(f"**房屋**: {pending_data['house_name']}")
+    print(f"**欠费账单数**: {len(pending_data['bill_ids'])} 条")
+    print(f"**指定代办人**: {', '.join(selected_names)}")
+    print(f"**团队ID**: {pending_data['teamID']}")
+    print(f"**支付通知ID**: {pending_data['order_id']}")
+
+    if 'data' in result and result['data']:
+        work_order_id = result['data'].get('id', '')
+        if work_order_id:
+            print(f"**工单ID**: {work_order_id}")
+
+    logger.info(f"催缴工单生成成功: community={pending_data['community_name']}, house={pending_data['house_name']},代办人={len(selected_user_ids)}")
 
 
 if __name__ == "__main__":
@@ -5885,6 +6612,27 @@ if __name__ == "__main__":
             community_name = sys.argv[3]
             keyword = sys.argv[4]
             generate_collection_url_by_name(charge_system_name, community_name, keyword)
+    elif command == "generate_charge_work_order":
+        # 生成单个房屋催缴工单（推荐，智能匹配，两步完成）
+        if len(sys.argv) < 5:
+            print("错误：请提供收费系统名称、小区名称和房屋关键词")
+            print("用法: python3 main.py generate_charge_work_order <收费系统名称> <小区名称> <房屋关键词>")
+            print("示例: python3 main.py generate_charge_work_order 收费系统 小区 1栋/1单元/101")
+        else:
+            charge_system_name = sys.argv[2]
+            community_name = sys.argv[3]
+            keyword = sys.argv[4]
+            generate_charge_work_order_by_name(charge_system_name, community_name, keyword)
+    elif command == "confirm_charge_work_order":
+        # 确认生成催缴工单，处理代办人选择
+        if len(sys.argv) < 3:
+            print("错误：请提供选择的代办人序号")
+            print("用法: python3 main.py confirm_charge_work_order <序号>")
+            print("示例: python3 main.py confirm_charge_work_order 1")
+            print("示例（多选）: python3 main.py confirm_charge_work_order 1,2")
+        else:
+            selection_input = sys.argv[2]
+            confirm_charge_work_order(selection_input)
     else:
         print("错误：未知的指令或参数不足")
         print("可用指令:")
@@ -5923,3 +6671,5 @@ if __name__ == "__main__":
         print("  collect_payment <收费系统名称> <小区名称> <房屋关键词> [开始日期] [结束日期] [支付方式] - 对特定房屋指定时间范围的账单进行收款（推荐，智能匹配）")
         print("  confirm_payment <yes/no/序号> - 确认收款，处理用户选择")
         print("  generate_collection_url <收费系统名称> <小区名称> <房屋关键词> - 生成房屋所有欠费账单的催缴链接（一步完成）")
+        print("  generate_charge_work_order <收费系统名称> <小区名称> <房屋关键词> - 生成催缴工单（推荐，智能匹配，两步完成）")
+        print("  confirm_charge_work_order <序号> - 确认选择代办人，生成催缴工单")
