@@ -5224,6 +5224,271 @@ def confirm_payment_collection(confirmation_input: str, pay_type_name: str = Non
     return data
 
 
+def generate_web_bill_share_url(community_id: int, asset_id: int, bill_ids: list) -> dict:
+    """
+    调用 API 生成微信账单分享链接
+
+    Args:
+        community_id: 小区ID
+        asset_id: 房屋ID
+        bill_ids: 账单ID列表
+
+    Returns:
+        API响应数据字典
+    """
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
+
+    payload = {
+        "communityID": int(community_id),
+        "assetType": 1,
+        "assetId": int(asset_id),
+        "ids": bill_ids
+    }
+
+    try:
+        response = requests.post(
+            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/getWebBillShareURL",
+            json=payload,
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"生成催缴链接失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            return None
+
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get('code') != 0:
+            logger.error(f"生成催缴链接失败: {data.get('msg')}")
+            return None
+
+        logger.info(f"成功生成催缴链接，小区ID: {community_id}, 房屋ID: {asset_id}, 账单数: {len(bill_ids)}")
+        return data
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"生成催缴链接发生异常: {e}")
+        return None
+
+
+def _process_generate_collection_url(community_id: str, house_node: dict, community_name: str):
+    """
+    内部函数：处理生成催缴链接流程
+
+    Args:
+        community_id: 小区ID
+        house_node: 房屋节点
+        community_name: 小区名称
+    """
+    house_id = house_node['id']
+    house_name = house_node['name']
+
+    print(f"已选择房屋：{house_name}")
+
+    # 查询欠费信息获取账单ID
+    arrears_data = get_household_arrears_by_id(community_id, str(house_id))
+    if not arrears_data:
+        print("查询欠费信息失败")
+        return
+
+    arrears_list = arrears_data.get('data', [])
+    if not arrears_list:
+        print(f"该房屋当前无欠费，无法生成催缴链接")
+        return
+
+    # 提取所有账单ID
+    # 从每个欠费项的 idStr 拆分逗号分隔
+    bill_ids = []
+    for arrear in arrears_list:
+        id_str = arrear.get('idStr', '')
+        if id_str:
+            for bill_id_str in id_str.split(','):
+                bill_id_str = bill_id_str.strip()
+                if bill_id_str and bill_id_str.isdigit():
+                    bill_ids.append(int(bill_id_str))
+
+    if not bill_ids:
+        print(f"未找到该房屋的欠费账单ID，无法生成催缴链接")
+        return
+
+    # 获取房屋ID（assetId）- 从第一个欠费项获取
+    first_arrear = arrears_list[0]
+    house_info = first_arrear.get('houseInfo', {})
+    asset_id = house_info.get('id')
+    if not asset_id:
+        print("无法获取房屋ID信息")
+        return
+
+    # 调用 API 生成催缴链接
+    print(f"正在生成催缴链接...")
+    result = generate_web_bill_share_url(int(community_id), int(asset_id), bill_ids)
+
+    if result:
+        share_text = result.get('data', {}).get('text', '')
+        if not share_text:
+            print(f"\n✓ 催缴链接生成成功，但未返回分享文案")
+            print(f"API返回数据: {result}")
+        else:
+            print(f"\n✓ 催缴链接生成成功！\n")
+            print(f"**小区**: {community_name}")
+            print(f"**房屋**: {house_name}")
+            print(f"**账单数量**: {len(bill_ids)}")
+            print(f"\n--- 分享链接文案 ---\n")
+            print(share_text)
+            logger.info(f"催缴链接生成成功: 小区={community_name}, 房屋={house_name}, 账单数={len(bill_ids)}")
+    else:
+        print("\n✗ 催缴链接生成失败，请查看日志获取详细信息")
+
+
+def generate_collection_url_by_name(charge_system_name=None, community_name=None, keyword=None):
+    """
+    通过名称智能匹配房屋并生成催缴链接
+
+    Args:
+        charge_system_name: 收费系统名称
+        community_name: 小区名称
+        keyword: 房屋位置关键词
+    """
+    # 检查必要参数
+    if not charge_system_name:
+        print("NEED_INFO: 请提供收费系统名称")
+        print("提示：可以先使用 list_charge_systems 命令查看可用的收费系统")
+        return
+
+    if not community_name:
+        print("NEED_INFO: 请提供小区名称")
+        return
+
+    if not keyword:
+        print("NEED_INFO: 请提供房屋位置关键词（如楼栋/单元/房屋号）")
+        return
+
+    # 获取收费系统映射
+    system_map = get_user_charge_systems(return_map=True)
+    if not system_map:
+        print("获取收费系统列表失败")
+        return
+
+    # 查找收费系统 ID
+    charge_system_id = system_map.get(charge_system_name)
+    if not charge_system_id:
+        print(f"未找到收费系统：{charge_system_name}")
+        print("可用的收费系统：" + ", ".join(system_map.keys()))
+        return
+
+    # 搜索小区
+    community_map = search_community(charge_system_id, community_name, return_map=True)
+    if community_map is None:
+        print("搜索小区失败")
+        return
+
+    if not community_map:
+        print(f"未找到匹配的小区：{community_name}")
+        return
+
+    if len(community_map) > 1:
+        # 多个匹配，列出供用户选择
+        print(f"找到多个匹配的小区，请使用完整的小区名称重新查询：")
+        for name in community_map.keys():
+            print(f"  - {name}")
+        return
+
+    # 只有一个匹配，继续处理
+    comm_name, comm_id = next(iter(community_map.items()))
+    print(f"找到小区：{comm_name}")
+
+    # 先尝试从缓存加载上一次的匹配列表
+    cache_data = load_match_cache()
+    if cache_data and str(cache_data.get('community_id')) == str(comm_id):
+        cached_nodes = cache_data.get('nodes', [])
+        if cached_nodes:
+            # 尝试解析用户选择
+            selected_node = parse_user_selection(keyword, cached_nodes)
+            if selected_node:
+                logger.info(f"用户选择了: {selected_node.get('name')}")
+                # 清除缓存
+                clear_match_cache()
+                # 检查是否是房屋级别
+                if selected_node['level'] != 'house':
+                    print(f"请选择具体的房屋生成催缴链接，当前选择的是{selected_node['name']}（{selected_node['level']}）")
+                    return
+                # 继续处理
+                return _process_generate_collection_url(str(comm_id), selected_node, comm_name)
+            else:
+                # 解析失败，清除缓存，按新关键词重新搜索
+                logger.info("无法解析用户选择，清除缓存并重新搜索")
+                clear_match_cache()
+
+    # 清理关键词
+    clean_keyword = keyword.replace("催缴链接", "").replace("链接", "").replace("的", "").strip()
+
+    # 检查是否使用精确匹配
+    use_exact_match = "/" in clean_keyword
+
+    # 获取完整房屋结构
+    household_data = search_household_structure(str(comm_id), "")
+
+    if household_data is None:
+        print("搜索房屋结构失败")
+        return
+
+    # 找出匹配的节点
+    if use_exact_match:
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, exact_match=True)
+        if not matching_nodes:
+            logger.info("精确匹配未找到结果，使用模糊匹配")
+            keywords = clean_keyword.split("/")
+            search_kw = keywords[-1] if keywords else clean_keyword
+            household_data_for_search = search_household_structure(str(comm_id), search_kw)
+            if household_data_for_search:
+                household_data = household_data_for_search
+            matching_nodes = find_matching_nodes(household_data, clean_keyword)
+    else:
+        keywords = split_keywords(clean_keyword)
+        search_kw = keywords[-1] if keywords else clean_keyword
+        household_data_for_search = search_household_structure(str(comm_id), search_kw)
+        if household_data_for_search:
+            household_data = household_data_for_search
+        matching_nodes = find_matching_nodes(household_data, clean_keyword)
+
+    if not matching_nodes:
+        # 尝试宽松匹配
+        logger.info(f"严格匹配未找到，尝试宽松匹配: {clean_keyword}")
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, relaxed_match=True)
+
+    if not matching_nodes:
+        # 仍然没找到，生成候选列表
+        logger.info(f"宽松匹配也未找到，生成候选列表")
+        candidates = generate_candidates(household_data, clean_keyword)
+        if candidates:
+            print_candidates(clean_keyword, candidates)
+        else:
+            print(f"未找到与'{clean_keyword}'匹配的楼栋/单元/房屋，请确认输入是否正确")
+        return
+
+    if len(matching_nodes) == 1:
+        node = matching_nodes[0]
+        if node['level'] != 'house':
+            print(f"请选择具体的房屋生成催缴链接，当前选择的是{node['name']}（{node['level']}）")
+            return
+        return _process_generate_collection_url(str(comm_id), node, comm_name)
+    else:
+        save_match_cache(comm_id, matching_nodes)
+        print("MULTI_MATCH:")
+        for idx, node in enumerate(matching_nodes, 1):
+            level_label = {
+                'building': '楼栋',
+                'unit': '单元',
+                'house': '房屋'
+            }.get(node['level'], '未知')
+            print(f"{idx}. {node['name']} ({level_label})")
+
+
 if __name__ == "__main__":
     command = sys.argv[1] if len(sys.argv) > 1 else ""
 
@@ -5609,6 +5874,17 @@ if __name__ == "__main__":
         else:
             confirmation_input = sys.argv[2]
             confirm_payment_collection(confirmation_input)
+    elif command == "generate_collection_url":
+        # 生成单个房屋催缴链接（推荐，智能匹配，一步完成）
+        if len(sys.argv) < 5:
+            print("错误：请提供收费系统名称、小区名称和房屋关键词")
+            print("用法: python3 main.py generate_collection_url <收费系统名称> <小区名称> <房屋关键词>")
+            print("示例: python3 main.py generate_collection_url 收费系统 小区 1栋/1单元/101")
+        else:
+            charge_system_name = sys.argv[2]
+            community_name = sys.argv[3]
+            keyword = sys.argv[4]
+            generate_collection_url_by_name(charge_system_name, community_name, keyword)
     else:
         print("错误：未知的指令或参数不足")
         print("可用指令:")
@@ -5646,3 +5922,4 @@ if __name__ == "__main__":
         print("  send_single_house_sms_reminder <小区ID> <房屋ID> <业主ID逗号分隔> <账单ID逗号分隔> - 单个房屋短信催缴（ID模式，备用）")
         print("  collect_payment <收费系统名称> <小区名称> <房屋关键词> [开始日期] [结束日期] [支付方式] - 对特定房屋指定时间范围的账单进行收款（推荐，智能匹配）")
         print("  confirm_payment <yes/no/序号> - 确认收款，处理用户选择")
+        print("  generate_collection_url <收费系统名称> <小区名称> <房屋关键词> - 生成房屋所有欠费账单的催缴链接（一步完成）")
