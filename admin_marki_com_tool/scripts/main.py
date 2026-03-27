@@ -4883,6 +4883,45 @@ def clear_refund_confirmation_cache():
         logger.info("退款确认缓存已清除")
 
 
+# === 已缴账单撤回缓存相关 ===
+def get_revoke_confirmation_cache_path():
+    """获取撤回确认缓存文件路径"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(script_dir, '.revoke_confirmation_cache.json')
+
+
+def save_revoke_confirmation_cache(cache_data):
+    """保存待确认撤回信息到缓存"""
+    cache_path = get_revoke_confirmation_cache_path()
+    try:
+        with open(cache_path, 'w', encoding='utf-8') as f:
+            json.dump(cache_data, f, indent=2, ensure_ascii=False)
+        logger.info("撤回确认缓存已保存")
+    except Exception as e:
+        logger.error(f"保存撤回确认缓存失败: {e}")
+
+
+def load_revoke_confirmation_cache():
+    """从缓存加载待确认撤回信息"""
+    cache_path = get_revoke_confirmation_cache_path()
+    if not os.path.exists(cache_path):
+        return None
+    try:
+        with open(cache_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"读取撤回确认缓存失败: {e}")
+        return None
+
+
+def clear_revoke_confirmation_cache():
+    """清除撤回确认缓存"""
+    cache_path = get_revoke_confirmation_cache_path()
+    if os.path.exists(cache_path):
+        os.remove(cache_path)
+        logger.info("撤回确认缓存已清除")
+
+
 # === 支付方式映射 ===
 def get_pay_type_by_name(pay_type_name: str) -> int:
     """根据支付方式中文名称获取 payType 编码"""
@@ -5510,6 +5549,183 @@ def list_house_refundable_bills(community_id: str, asset_id: str, asset_type: in
     return cache_data
 
 
+def list_house_revocable_bills(community_id: str, asset_id: str, asset_type: int, node_name: str,
+                       community_name: str, start_time: int, end_time: int, charge_item_id: str = None):
+    """
+    查询特定房屋的可撤回（已支付）账单列表
+
+    Args:
+        community_id: 小区ID
+        asset_id: 资产ID（房屋ID）
+        asset_type: 资产类型（1=房屋）
+        node_name: 节点名称（房屋全名）
+        community_name: 小区名称
+        start_time: 开始时间戳
+        end_time: 结束时间戳
+        charge_item_id: 收费项目ID（可选，筛选）
+    """
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict)
+
+    # 构建请求负载 - 查询已支付账单（payStatus = 1）
+    payload = {
+        "communityID": int(community_id),
+        "assetType": asset_type,
+        "assetId": int(asset_id),
+        "payStatus": 1,  # 1 = 已支付，可撤回
+        "index": "",
+        "selectChargeItemList": [],
+        "selectChargeItemAll": False,
+        "dealLogId": 0,
+        "categoryId": 0,
+        "chargeItemVersion": 2,
+        "chargeItemCategorys": []
+    }
+
+    # 如果指定了收费项目，添加筛选条件
+    if charge_item_id is not None:
+        payload["selectChargeItemList"] = [int(charge_item_id)]
+
+    url = f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/getCashierDeskListByIndex"
+
+    try:
+        response = requests.post(
+            url,
+            json=payload,
+            headers=headers,
+            timeout=10
+        )
+    except requests.exceptions.RequestException as e:
+        logger.error(f"查询可撤回账单接口调用发生异常: {e}")
+        print(f"接口调用发生异常: {str(e)}")
+        return None
+
+    if response.status_code != 200:
+        logger.error(f"查询可撤回账单失败，状态码: {response.status_code}, 响应内容: {response.text}")
+        print(f"查询失败，HTTP状态码: {response.status_code}")
+        return None
+
+    data = response.json()
+    if data.get('code') != 0:
+        logger.error(f"查询错误: {data.get('msg')}")
+        print(f"查询失败：{data.get('msg')}")
+        return None
+
+    # 提取账单列表
+    # API返回结构: data.list[] 中每个元素按月份分组 {"date": "2026-03", "records": [实际账单数组]}
+    month_groups = data.get('data', {}).get('list', [])
+    if not month_groups:
+        print(f"\n未找到可撤回账单。")
+        print(f"小区: {community_name}")
+        print(f"房屋: {node_name}")
+        clear_revoke_confirmation_cache()
+        return None
+
+    # 展平所有月份的账单
+    all_bills = []
+    for month_group in month_groups:
+        records = month_group.get('records', [])
+        all_bills.extend(records)
+
+    # 筛选时间范围内的账单（接口返回的是所有已支付，我们需要根据时间过滤）
+    filtered_bills = []
+    total_amount = 0
+    for bill in all_bills:
+        # 检查账单是否可撤回（canRevoke = 1）
+        if bill.get('canRevoke') != 1:
+            continue
+        # 按时间筛选
+        bill_pay_time = bill.get('payTime', 0)
+        if start_time <= bill_pay_time <= end_time:
+            filtered_bills.append(bill)
+            total_amount += bill.get('amount', 0)
+
+    if not filtered_bills:
+        print(f"\n指定时间范围内没有可撤回账单。")
+        print(f"小区: {community_name}")
+        print(f"房屋: {node_name}")
+        clear_revoke_confirmation_cache()
+        return None
+
+    # 保存到缓存供确认
+    cache_data = {
+        "community_id": community_id,
+        "community_name": community_name,
+        "asset_id": asset_id,
+        "asset_type": asset_type,
+        "node_name": node_name,
+        "start_time": start_time,
+        "end_time": end_time,
+        "charge_item_id": charge_item_id,
+        "bill_list": filtered_bills,
+        "total_amount": total_amount
+    }
+    save_revoke_confirmation_cache(cache_data)
+
+    # 按月份分组
+    from collections import defaultdict
+    bills_by_month = defaultdict(list)
+    for bill in filtered_bills:
+        date_str = bill.get('date', '')
+        # date_str 格式一般是 "YYYY-MM"
+        bills_by_month[date_str].append(bill)
+
+    # 格式化输出
+    start_date_str = datetime.fromtimestamp(start_time).strftime('%Y-%m-%d')
+    end_date_str = datetime.fromtimestamp(end_time).strftime('%Y-%m-%d')
+    total_amount_yuan = total_amount / 100
+
+    print(f"\n找到小区：{community_name}")
+    print(f"已选择房屋：{node_name}\n")
+    print(f"### 可撤回已缴账单信息\n")
+    print(f"**小区**: {community_name}")
+    print(f"**房屋**: {node_name}")
+    print(f"**时间范围**: {start_date_str} 至 {end_date_str}")
+    print(f"**可撤回账单数**: {len(filtered_bills)} 条")
+    print(f"**总金额**: ¥ {total_amount_yuan:.2f}\n")
+    print(f"账单列表按月份分组：\n")
+
+    # 按月份排序输出
+    sorted_months = sorted(bills_by_month.keys(), reverse=True)
+    global_idx = 1
+    for month in sorted_months:
+        month_bills = bills_by_month[month]
+        # 转换为 "YYYY年MM月" 格式
+        try:
+            y, m = month.split('-')
+            month_display = f"{y}年{m}月"
+        except:
+            month_display = month
+        print(f"---\n")
+        print(f"#### {month_display}\n")
+        for bill in month_bills:
+            amount_yuan = bill.get('amount', 0) / 100
+            pay_time_str = datetime.fromtimestamp(bill.get('payTime', 0)).strftime('%Y-%m-%d %H:%M:%S')
+            charge_item_name = bill.get('chargeItemName', '未知收费项目')
+            pay_type = bill.get('payType', '未知支付方式')
+            deal_log_id = bill.get('dealLogId', 0)
+
+            print(f"{global_idx}. **{charge_item_name}**")
+            print(f"   - 实缴金额: ¥ {amount_yuan:.2f}")
+            print(f"   - 支付方式: {get_pay_name_by_type(bill.get('payType', 0))}")
+            print(f"   - 缴费时间: {pay_time_str}")
+            print(f"   - 交易单号: {deal_log_id}")
+            print(f"   - 可撤回: 是\n")
+            global_idx += 1
+
+    print(f"---\n")
+    print(f"请确认是否进行撤回？")
+    print(f"- 运行命令 `confirm_revoke yes` 撤回全部账单")
+    print(f"- 运行命令 `confirm_revoke <序号>`（如`confirm_revoke 1`或`confirm_revoke 1,2`）只撤回指定账单")
+    print(f"- 运行命令 `confirm_revoke no` 取消")
+
+    logger.info(f"找到 {len(filtered_bills)} 条可撤回账单，总金额 {total_amount_yuan:.2f}，等待用户确认")
+    return cache_data
+
+
 def list_refundable_bills_by_name(charge_system_name=None, community_name=None, keyword=None,
                            start_date_str=None, end_date_str=None, charge_item_name=None):
     """
@@ -5691,6 +5907,187 @@ def list_refundable_bills_by_name(charge_system_name=None, community_name=None, 
         return
 
 
+def list_revocable_bills_by_name(charge_system_name=None, community_name=None, keyword=None,
+                           start_date_str=None, end_date_str=None, charge_item_name=None):
+    """
+    通过名称智能匹配查询可撤回已缴账单
+
+    Args:
+        charge_system_name: 收费系统名称
+        community_name: 小区名称
+        keyword: 房屋关键词
+        start_date_str: 开始日期字符串（可选）
+        end_date_str: 结束日期字符串（可选）
+        charge_item_name: 收费项目名称（可选）
+    """
+    # 解析日期，如果没有提供则默认本月
+    today = datetime.now()
+    if start_date_str is None:
+        # 本月第一天
+        start_date = datetime(today.year, today.month, 1)
+        start_time = int(start_date.timestamp())
+    else:
+        try:
+            start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+            start_time = int(start_date.timestamp())
+        except ValueError:
+            print(f"错误：开始日期格式不正确，请使用 YYYY-MM-DD 格式（如 {today.strftime('%Y-%m-%d')}）")
+            return
+
+    if end_date_str is None:
+        # 今天
+        end_date = datetime(today.year, today.month, today.day, 23, 59, 59)
+        end_time = int(end_date.timestamp())
+    else:
+        try:
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+            end_date = datetime(end_date.year, end_date.month, end_date.day, 23, 59, 59)
+            end_time = int(end_date.timestamp())
+        except ValueError:
+            print(f"错误：结束日期格式不正确，请使用 YYYY-MM-DD 格式（如 {today.strftime('%Y-%m-%d')}）")
+            return
+
+    logger.info(f"时间范围: {start_date.strftime('%Y-%m-%d')} 至 {end_date.strftime('%Y-%m-%d')}")
+
+    # 1. 获取收费系统
+    system_map = get_user_charge_systems(return_map=True)
+    if not system_map:
+        print("获取收费系统列表失败")
+        return
+    if charge_system_name not in system_map:
+        print(f"未找到收费系统：{charge_system_name}")
+        print("可用的收费系统：" + ", ".join(system_map.keys()))
+        return
+    charge_system_id = system_map[charge_system_name]
+    print(f"找到收费系统：{charge_system_name}")
+
+    # 2. 搜索小区
+    community_map = search_community(charge_system_id, community_name, return_map=True)
+    if not community_map:
+        print(f"未找到匹配的小区：{community_name}")
+        return
+    if len(community_map) > 1:
+        print(f"找到多个匹配的小区，请选择：")
+        for name in community_map.keys():
+            print(f"  - {name}")
+        return
+    # 只有一个匹配，直接使用
+    community_name_found = list(community_map.keys())[0]
+    community_id = community_map[community_name_found]
+    print(f"找到小区：{community_name_found}")
+
+    # 2.5 处理收费项目筛选
+    charge_item_id = None
+    if charge_item_name:
+        print(f"正在匹配收费项目：{charge_item_name}...")
+        charge_item_id = get_charge_item_id_by_name(str(community_id), str(charge_system_id), charge_item_name)
+        logger.info(f"收费项目筛选: {charge_item_name} → ID: {charge_item_id}")
+
+    # 3. 加载匹配缓存
+    cache_data = load_match_cache()
+    selected_node = None
+
+    # 检查缓存中是否有可用的匹配结果（用户选择场景）
+    if cache_data and str(cache_data.get('community_id')) == str(community_id):
+        cached_nodes = cache_data.get('nodes', [])
+        if cached_nodes:
+            # 尝试解析用户选择
+            selected_node = parse_user_selection(keyword, cached_nodes)
+            if selected_node:
+                logger.info(f"用户选择了: {selected_node.get('full_name')}")
+                # 清除缓存
+                clear_match_cache()
+                # 检查是否是房屋级别
+                if selected_node['level'] != 'house':
+                    print(f"请选择具体的房屋进行撤回，当前选择的是{selected_node['full_name']}（{selected_node['level']}）")
+                    return
+                # 继续处理
+                node_id = str(selected_node['id'])
+                node_name = selected_node['full_name']
+                asset_type = 1  # 房屋固定为1
+
+                logger.info(f"已选择房屋: {node_name}, ID: {node_id}")
+
+                # 4. 查询可撤回账单
+                list_house_revocable_bills(str(community_id), node_id, asset_type, node_name, community_name_found, start_time, end_time, charge_item_id)
+                return
+            else:
+                # 解析失败，清除缓存，按新关键词重新搜索
+                logger.info("无法解析用户选择，清除缓存并重新搜索")
+                clear_match_cache()
+
+    # 清理关键词 - 移除"撤回"关键词
+    clean_keyword = keyword.replace("撤回", "").replace("账单", "").replace("的", "").strip()
+
+    # 检查是否使用精确匹配（包含 / 分隔符）
+    use_exact_match = "/" in clean_keyword
+
+    # 获取完整房屋结构
+    household_data = search_household_structure(str(community_id), "")
+    if household_data is None:
+        print("搜索房屋结构失败")
+        return
+
+    # 找出匹配的节点
+    if use_exact_match:
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, exact_match=True)
+        if not matching_nodes:
+            logger.info("精确匹配未找到结果，使用模糊匹配")
+            keywords = clean_keyword.split("/")
+            search_kw = keywords[-1] if keywords else clean_keyword
+            household_data_for_search = search_household_structure(str(community_id), search_kw)
+            matching_nodes = find_matching_nodes(household_data_for_search, clean_keyword, exact_match=False, relaxed_match=True)
+    else:
+        # 模糊匹配
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, exact_match=False, relaxed_match=True)
+
+    if not matching_nodes:
+        # 宽松匹配也没找到，尝试宽松匹配整个关键词
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, exact_match=False, relaxed_match=True)
+        if not matching_nodes:
+            print("未找到任何匹配的房屋，请检查关键词重试")
+            return
+
+    if len(matching_nodes) == 1:
+        # 只有一个匹配，直接使用
+        selected_node = matching_nodes[0]
+        if selected_node['level'] != 'house':
+            print(f"匹配结果不是房屋，当前匹配到的是 {selected_node['level']}：{selected_node['full_name']}")
+            print("请提供更精确的关键词匹配到具体房屋")
+            return
+
+        clear_match_cache()
+        node_id = str(selected_node['id'])
+        node_name = selected_node['full_name']
+        asset_type = 1  # 房屋固定为1
+
+        # 查找收费项目ID（如果指定了）
+        charge_item_id = None
+        if charge_item_name:
+            # 获取初始化信息查找收费项目
+            logger.info(f"筛选收费项目: {charge_item_name}")
+            cs_init_info = get_community_cs_init_info(str(community_id), str(charge_system_id))
+            if cs_init_info:
+                charge_items = cs_init_info.get('chargeItemList', [])
+                for item in charge_items:
+                    if charge_item_name in item.get('name', ''):
+                        charge_item_id = str(item.get('id'))
+                        logger.info(f"匹配到收费项目: {item.get('name')}, ID: {charge_item_id}")
+                        break
+
+        logger.info(f"已选择房屋: {node_name}, ID: {node_id}")
+
+        # 查询可撤回账单
+        list_house_revocable_bills(str(community_id), node_id, asset_type, node_name, community_name_found, start_time, end_time, charge_item_id)
+    else:
+        # 多个匹配，保存到缓存让用户选择
+        save_match_cache(community_id, matching_nodes)
+        print(f"找到多个匹配，请选择：")
+        for idx, node in enumerate(matching_nodes, 1):
+            print(f"{idx}. {node['full_name']} ({node['level']})")
+        return
+
+
 def confirm_refund(confirmation_input: str):
     """
     确认退款，根据用户选择执行退款
@@ -5858,6 +6255,176 @@ def confirm_refund(confirmation_input: str):
     # 清除缓存
     clear_refund_confirmation_cache()
     logger.info(f"退款完成，成功 {success_count}/{len(selected_bills)}，总退款 {total_refund_amount_yuan:.2f}")
+
+
+def confirm_revoke(confirmation_input: str):
+    """
+    确认撤回，根据用户选择执行已缴账单撤回
+
+    Args:
+        confirmation_input: 用户输入 yes/no/序号
+    """
+    # 加载缓存
+    cache_data = load_revoke_confirmation_cache()
+    if not cache_data:
+        print("没有待确认的撤回，请先运行 list_revocable_bills 查询可撤回账单")
+        return
+
+    confirmation_input = confirmation_input.strip().lower()
+    if confirmation_input == 'no':
+        print("已取消撤回")
+        clear_revoke_confirmation_cache()
+        logger.info("用户取消撤回")
+        return
+
+    all_bills = cache_data.get('bill_list', [])
+    if not all_bills:
+        print("缓存中没有可撤回账单")
+        clear_revoke_confirmation_cache()
+        return
+        return
+
+    # 解析用户选择哪些账单
+    selected_bills = []
+    if confirmation_input == 'yes' or confirmation_input == 'y':
+        # 全部撤回
+        selected_bills = all_bills
+        logger.info(f"用户选择撤回全部 {len(selected_bills)} 个账单")
+    else:
+        # 解析序号（支持逗号分隔，如 "1" 或 "1,2"）
+        try:
+            # 处理逗号分隔
+            if ',' in confirmation_input:
+                indices = [int(idx.strip()) - 1 for idx in confirmation_input.split(',')]
+            else:
+                indices = [int(confirmation_input) - 1]
+
+            for idx in indices:
+                if 0 <= idx < len(all_bills):
+                    selected_bills.append(all_bills[idx])
+                else:
+                    print(f"序号 {idx + 1} 超出范围，请检查输入")
+                    return
+        except ValueError:
+            print("输入格式不正确，请使用 yes/no 或序号（如 1 或 1,2）")
+            return
+
+    if not selected_bills:
+        print("未选择任何可撤回账单")
+        return
+
+    # 开始逐个撤回
+    community_id = cache_data.get('community_id')
+    community_name = cache_data.get('community_name')
+    node_name = cache_data.get('node_name')
+
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
+
+    success_count = 0
+    success_bills = []
+    total_revoke_amount = 0
+    failed_bills = []
+
+    for bill in selected_bills:
+        bill_id = bill.get('id')
+        charge_item_name = bill.get('chargeItemName')
+        amount = bill.get('amount', 0)
+        date_str = bill.get('date', '')
+        version = bill.get('version', 0)
+
+        payload = {
+            "id": int(bill_id),
+            "payStatus": 4,  # 固定值4表示撤回
+            "version": int(version)
+        }
+
+        url = f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/modBill"
+
+        try:
+            response = requests.post(
+                url,
+                json=payload,
+                headers=headers,
+                timeout=10
+            )
+        except requests.exceptions.RequestException as e:
+            logger.error(f"撤回接口调用发生异常: {e}")
+            failed_bills.append({
+                "bill": bill,
+                "error": str(e)
+            })
+            continue
+
+        if response.status_code != 200:
+            logger.error(f"撤回失败，账单ID: {bill_id}, 状态码: {response.status_code}, 响应: {response.text}")
+            failed_bills.append({
+                "bill": bill,
+                "error": f"HTTP {response.status_code}"
+            })
+            continue
+
+        data = response.json()
+        if data.get('code') != 0:
+            error_msg = data.get('msg', '未知错误')
+            logger.error(f"撤回失败，账单ID: {bill_id}, 错误: {error_msg}")
+            failed_bills.append({
+                "bill": bill,
+                "error": error_msg
+            })
+            continue
+
+        # 撤回成功
+        success_count += 1
+        total_revoke_amount += amount
+        success_bills.append({
+            "bill": bill,
+            "date": date_str,
+            "charge_item_name": charge_item_name,
+            "amount": amount
+        })
+        logger.info(f"撤回成功，账单ID: {bill_id}, 金额: {amount / 100:.2f}")
+
+    # 输出结果
+    revoke_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    total_revoke_amount_yuan = total_revoke_amount / 100
+
+    if success_count > 0:
+        print(f"\n✓ 撤回成功！\n")
+        print(f"**小区**: {community_name}")
+        print(f"**房屋**: {node_name}")
+        print(f"**撤回账单数**: {success_count} 条")
+        print(f"**总金额**: ¥ {total_revoke_amount_yuan:.2f}")
+        print(f"**撤回时间**: {revoke_time_str}\n")
+        print(f"撤回账单明细：")
+        for idx, sb in enumerate(success_bills, 1):
+            amount_yuan = sb['amount'] / 100
+            date_display = sb['date']
+            try:
+                y, m = date_display.split('-')
+                date_display = f"{y}年{m}月"
+            except:
+                pass
+            print(f"{idx}. {date_display} {sb['charge_item_name']} - ¥ {amount_yuan:.2f}")
+
+        if failed_bills:
+            print(f"\n部分撤回失败 ({len(failed_bills)} 项):")
+            for idx, fb in enumerate(failed_bills, 1):
+                bill = fb['bill']
+                print(f"{idx}. {bill.get('chargeItemName')} - {fb['error']}")
+
+    else:
+        print(f"\n撤回全部失败！\n")
+        for idx, fb in enumerate(failed_bills, 1):
+            bill = fb['bill']
+            print(f"{idx}. {bill.get('chargeItemName')} - {fb['error']}")
+
+    # 清除缓存
+    clear_revoke_confirmation_cache()
+    logger.info(f"撤回完成，成功 {success_count}/{len(selected_bills)}，总撤回 {total_revoke_amount_yuan:.2f}")
 
 
 def generate_web_bill_share_url(community_id: int, asset_id: int, bill_ids: list) -> dict:
@@ -7514,6 +8081,47 @@ if __name__ == "__main__":
         else:
             confirmation_input = sys.argv[2]
             confirm_refund(confirmation_input)
+    elif command == "list_revocable_bills":
+        # 查询可撤回已缴账单（智能匹配，两步完成）
+        if len(sys.argv) < 5:
+            print("错误：请提供收费系统名称、小区名称和房屋关键词")
+            print("用法: python3 main.py list_revocable_bills <收费系统名称> <小区名称> <房屋关键词> [开始日期] [结束日期] [收费项目]")
+            print("示例: python3 main.py list_revocable_bills 收费系统 小区 1栋/1单元/101")
+            print("示例: python3 main.py list_revocable_bills 收费系统 小区 1栋/1单元/101 2026-03-01 2026-03-31")
+            print("示例: python3 main.py list_revocable_bills 收费系统 小区 1栋/1单元/101 2026-03-01 2026-03-31 物业费")
+        else:
+            charge_system_name = sys.argv[2]
+            community_name = sys.argv[3]
+            keyword = sys.argv[4]
+            if len(sys.argv) == 5:
+                # 只有三个必选参数
+                list_revocable_bills_by_name(charge_system_name, community_name, keyword)
+            elif len(sys.argv) == 6:
+                # 只有开始日期，没有结束日期和收费项目
+                start_date_str = sys.argv[5]
+                list_revocable_bills_by_name(charge_system_name, community_name, keyword, start_date_str)
+            elif len(sys.argv) == 7:
+                # start end，没有收费项目
+                start_date_str = sys.argv[5]
+                end_date_str = sys.argv[6]
+                list_revocable_bills_by_name(charge_system_name, community_name, keyword, start_date_str, end_date_str)
+            elif len(sys.argv) >= 8:
+                # start end + charge_item
+                start_date_str = sys.argv[5]
+                end_date_str = sys.argv[6]
+                charge_item_name = sys.argv[7]
+                list_revocable_bills_by_name(charge_system_name, community_name, keyword, start_date_str, end_date_str, charge_item_name)
+    elif command == "confirm_revoke":
+        # 确认撤回，处理用户选择
+        if len(sys.argv) < 3:
+            print("错误：请提供确认选项（yes/no 或序号）")
+            print("用法: python3 main.py confirm_revoke <yes/no/序号>")
+            print("示例: python3 main.py confirm_revoke yes")
+            print("示例: python3 main.py confirm_revoke 1")
+            print("示例: python3 main.py confirm_revoke 1,2")
+        else:
+            confirmation_input = sys.argv[2]
+            confirm_revoke(confirmation_input)
     elif command == "generate_collection_url":
         # 生成单个房屋催缴链接（推荐，智能匹配，一步完成）
         if len(sys.argv) < 5:
@@ -7596,6 +8204,8 @@ if __name__ == "__main__":
         print("  confirm_payment <yes/no/序号> - 确认收款，处理用户选择")
         print("  list_refundable_bills <收费系统名称> <小区名称> <房屋关键词> [开始日期] [结束日期] [收费项目] - 查询指定房屋已缴可退款账单（推荐，智能匹配，两步完成）")
         print("  confirm_refund <yes/no/序号> - 确认退款，处理用户选择")
+        print("  list_revocable_bills <收费系统名称> <小区名称> <房屋关键词> [开始日期] [结束日期] [收费项目] - 查询指定房屋已缴可撤回账单（推荐，智能匹配，两步完成）")
+        print("  confirm_revoke <yes/no/序号> - 确认撤回已缴账单，处理用户选择")
         print("  generate_collection_url <收费系统名称> <小区名称> <房屋关键词> - 生成房屋所有欠费账单的催缴链接（一步完成）")
         print("  generate_charge_work_order <收费系统名称> <小区名称> <房屋关键词> - 生成催缴工单（推荐，智能匹配，两步完成）")
         print("  confirm_charge_work_order <序号> - 确认选择代办人，生成催缴工单")

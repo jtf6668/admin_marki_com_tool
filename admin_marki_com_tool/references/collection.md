@@ -34,6 +34,8 @@
 | `confirm_payment` | 确认收款，处理用户选择 | `yes/no/序号` |
 | `list_refundable_bills` | 查询指定房屋已缴可退款账单（推荐，智能匹配，两步完成） | `收费系统名称 小区名称 房屋关键词 [开始日期 结束日期] [收费项目]` |
 | `confirm_refund` | 确认退款，处理用户选择 | `yes/no/序号` |
+| `list_revocable_bills` | 查询指定房屋已缴可撤回账单（推荐，智能匹配，两步完成） | `收费系统名称 小区名称 房屋关键词 [开始日期 结束日期] [收费项目]` |
+| `confirm_revoke` | 确认撤回已缴账单，处理用户选择 | `yes/no/序号` |
 
 ---
 
@@ -444,6 +446,22 @@ python3 main.py confirm_refund no
   - `communityID`: 小区ID
   - `dealLogId`: 交易日志ID（从查询接口获取）
   - `billId`: 账单ID（从查询接口获取）
+
+### 执行撤回接口（已缴账单撤回）
+- **端点**: `{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/modBill`
+- **方法**: POST
+- **Payload 格式**:
+```json
+{
+  "id": 981828295,
+  "payStatus": 4,
+  "version": 5
+}
+```
+- **字段说明**:
+  - `id`: 账单ID（从查询接口获取）
+  - `payStatus`: 付款状态（固定值 `4` 表示撤回）
+  - `version`: 账单版本号（从查询接口获取）
 
 ---
 
