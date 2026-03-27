@@ -4875,7 +4875,7 @@ def get_pay_name_by_type(pay_type: int) -> str:
 
 
 def collect_house_bills(community_id: str, asset_id: str, asset_type: int, node_name: str,
-                       community_name: str, start_time: int, end_time: int, pay_type: int = None):
+                       community_name: str, start_time: int, end_time: int, charge_item_id: str = None, pay_type: int = None):
     """
     查询特定房屋的待收款账单列表
     """
@@ -4902,6 +4902,10 @@ def collect_house_bills(community_id: str, asset_id: str, asset_type: int, node_
         "chargeItemVersion": 2,
         "chargeItemCategorys": []
     }
+
+    # 如果指定了收费项目，添加筛选条件
+    if charge_item_id is not None:
+        payload["selectChargeItemList"] = [int(charge_item_id)]
 
     url = f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/getCashierDeskListByIndex"
 
@@ -4963,6 +4967,7 @@ def collect_house_bills(community_id: str, asset_id: str, asset_type: int, node_
         'node_name': node_name,
         'start_time': start_time,
         'end_time': end_time,
+        'charge_item_id': charge_item_id,
         'bill_list': bill_list,
         'total_amount': total_amount,
         'pay_type': pay_type,
@@ -4994,7 +4999,7 @@ def collect_house_bills(community_id: str, asset_id: str, asset_type: int, node_
 
 
 def collect_house_bills_by_name(charge_system_name=None, community_name=None, keyword=None,
-                               start_date_str=None, end_date_str=None, pay_type_name=None):
+                               start_date_str=None, end_date_str=None, charge_item_name=None, pay_type_name=None):
     """
     通过名称对特定房屋指定时间范围的账单进行收款（智能匹配模式）
     """
@@ -5024,6 +5029,13 @@ def collect_house_bills_by_name(charge_system_name=None, community_name=None, ke
     community_name_found = list(community_map.keys())[0]
     community_id = community_map[community_name_found]
     print(f"找到小区：{community_name_found}")
+
+    # 2.5 处理收费项目筛选
+    charge_item_id = None
+    if charge_item_name:
+        print(f"正在匹配收费项目：{charge_item_name}...")
+        charge_item_id = get_charge_item_id_by_name(str(community_id), str(charge_system_id), charge_item_name)
+        logger.info(f"收费项目筛选: {charge_item_name} → ID: {charge_item_id}")
 
     # 3. 解析日期
     try:
@@ -5081,7 +5093,7 @@ def collect_house_bills_by_name(charge_system_name=None, community_name=None, ke
                 logger.info(f"已选择房屋: {node_name}, ID: {node_id}")
 
                 # 5. 查询账单
-                collect_house_bills(str(community_id), node_id, asset_type, node_name, community_name_found, start_time, end_time, pay_type)
+                collect_house_bills(str(community_id), node_id, asset_type, node_name, community_name_found, start_time, end_time, charge_item_id, pay_type)
                 return
             else:
                 # 解析失败，清除缓存，按新关键词重新搜索
@@ -5142,7 +5154,7 @@ def collect_house_bills_by_name(charge_system_name=None, community_name=None, ke
         logger.info(f"已选择房屋: {node_name}, ID: {node_id}")
 
         # 5. 查询账单
-        collect_house_bills(str(community_id), node_id, asset_type, node_name, community_name_found, start_time, end_time, pay_type)
+        collect_house_bills(str(community_id), node_id, asset_type, node_name, community_name_found, start_time, end_time, charge_item_id, pay_type)
     else:
         # 多个匹配，保存到缓存让用户选择
         save_match_cache(community_id, matching_nodes)
@@ -6795,41 +6807,76 @@ if __name__ == "__main__":
         # 对特定房屋指定时间范围的账单进行收款（推荐，智能匹配）
         if len(sys.argv) < 4:
             print("错误：请提供收费系统名称、小区名称和房屋关键词")
-            print("用法: python3 main.py collect_payment <收费系统名称> <小区名称> <房屋关键词> [开始日期] [结束日期] [支付方式]")
+            print("用法: python3 main.py collect_payment <收费系统名称> <小区名称> <房屋关键词> [开始日期] [结束日期] [收费项目] [支付方式]")
             print("日期格式: YYYY-MM-DD")
             print("支持支付方式: 现金、微信、支付宝（默认现金）")
-            print("示例: python3 main.py collect_payment 收费系统 小区 1栋/1单元/101 2026-03-01 2026-03-31 现金")
+            print("示例: python3 main.py collect_payment 收费系统 小区 1栋/1单元/101 2026-03-01 2026-03-31 物业费 现金")
+            print("示例（默认本月，只收物业费）: python3 main.py collect_payment 收费系统 小区 1栋/1单元/101 物业费 现金")
+            print("示例（默认本月，默认现金）: python3 main.py collect_payment 收费系统 小区 1栋/1单元/101 物业费")
             print("示例（默认本月）: python3 main.py collect_payment 收费系统 小区 1栋/1单元/101 现金")
         else:
             charge_system_name = sys.argv[2]
             community_name = sys.argv[3]
             keyword = sys.argv[4]
 
-            # 处理可选参数：开始日期、结束日期、支付方式
+            # 处理可选参数：开始日期、结束日期、收费项目、支付方式
             start_date_str = None
             end_date_str = None
+            charge_item_name = None
             pay_type_name = None
 
-            # len(sys.argv) = 5: collect_payment cs community keyword
-            # len(sys.argv) = 6: collect_payment cs community keyword pay_type
-            # len(sys.argv) = 7: collect_payment cs community keyword start end
-            # len(sys.argv) = 8: collect_payment cs community keyword start end pay_type
+            def is_pay_method(s: str) -> bool:
+                """判断是否是支付方式名称"""
+                return s in ["现金", "微信", "支付宝"]
+
+            def is_date(s: str) -> bool:
+                """简单判断是否是日期格式 YYYY-MM-DD"""
+                return len(s) == 10 and '-' in s
+
+            # len = 5 → 只有必填项：collect_payment cs community keyword
+            # len = 6 → 要么是支付方式，要么是收费项目
+            # len = 7 → 要么是 start end，要么是 charge_item pay_type
+            # len = 8 → start end + charge_item
+            # len = 9 → start end + charge_item + pay_type
 
             if len(sys.argv) == 6:
-                # collect_payment cs community keyword pay_type
-                # 这种情况默认使用本月
-                pay_type_name = sys.argv[5]
+                # 判断第5个参数是支付方式还是收费项目
+                arg = sys.argv[5]
+                if is_pay_method(arg):
+                    pay_type_name = arg
+                else:
+                    charge_item_name = arg
             elif len(sys.argv) == 7:
-                # 只有开始日期没有结束日期，不完整
-                print("错误：如果提供了开始日期，必须同时提供结束日期")
-                print("用法: python3 main.py collect_payment <收费系统名称> <小区名称> <房屋关键词> [开始日期] [结束日期] [支付方式]")
-            elif len(sys.argv) >= 7:
+                arg1 = sys.argv[5]
+                arg2 = sys.argv[6]
+                if is_date(arg1) and is_date(arg2):
+                    # 两个都是日期 → start end
+                    start_date_str = arg1
+                    end_date_str = arg2
+                else:
+                    # 否则第一个收费项目，第二个支付方式
+                    charge_item_name = arg1
+                    pay_type_name = arg2
+            elif len(sys.argv) == 8:
+                arg1 = sys.argv[5]
+                arg2 = sys.argv[6]
+                if is_date(arg1) and is_date(arg2):
+                    # start end + charge_item
+                    start_date_str = arg1
+                    end_date_str = arg2
+                    charge_item_name = sys.argv[7]
+                else:
+                    # 这种情况应该不会出现，按收费项目 + 支付方式处理
+                    charge_item_name = arg1
+                    pay_type_name = sys.argv[7]
+            elif len(sys.argv) >= 9:
+                # 完整参数：start end + charge_item + pay_type
                 start_date_str = sys.argv[5]
                 end_date_str = sys.argv[6]
-                if len(sys.argv) >= 8:
-                    pay_type_name = sys.argv[7]
+                charge_item_name = sys.argv[7]
+                pay_type_name = sys.argv[8]
 
-            collect_house_bills_by_name(charge_system_name, community_name, keyword, start_date_str, end_date_str, pay_type_name)
+            collect_house_bills_by_name(charge_system_name, community_name, keyword, start_date_str, end_date_str, charge_item_name, pay_type_name)
     elif command == "confirm_payment":
         # 确认收款，处理用户选择
         if len(sys.argv) < 3:
