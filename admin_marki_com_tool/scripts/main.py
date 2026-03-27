@@ -6216,6 +6216,246 @@ def confirm_charge_work_order(selection_input: str):
     logger.info(f"催缴工单生成成功: community={pending_data['community_name']}, house={pending_data['house_name']},代办人={len(selected_user_ids)}")
 
 
+def create_phone_call_log(community_id: int, asset_id: int, call_user_uid: int) -> dict:
+    """
+    创建电话催缴记录
+
+    Args:
+        community_id: 小区ID
+        asset_id: 房屋ID
+        call_user_uid: 拨打电话用户ID（当前登录用户）
+
+    Returns:
+        API返回结果字典，失败返回None
+    """
+    import time
+    import random
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
+
+    payload = {
+        "communityId": community_id,
+        "callUser": call_user_uid,
+        "assetId": asset_id,
+        "callType": 5,
+        "callTime": int(time.time()),
+        "imgs": [],
+        "assetType": 1
+    }
+
+    try:
+        response = requests.post(
+            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/addMoneyCallLog",
+            json=payload,
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"创建电话催缴记录失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            return None
+
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get('code') != 0:
+            logger.error(f"创建电话催缴记录失败: {data.get('msg')}")
+            return None
+
+        logger.info(f"创建电话催缴记录成功: communityId={community_id}, assetId={asset_id}, callUser={call_user_uid}")
+        return data
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"创建电话催缴记录调用发生异常: {e}")
+        return None
+
+
+def _process_create_phone_call_log(community_id: str, house_node: dict, community_name: str, call_user_uid: int):
+    """
+    内部函数：处理创建电话催缴记录流程
+
+    Args:
+        community_id: 小区ID
+        house_node: 房屋节点
+        community_name: 小区名称
+        call_user_uid: 当前登录用户ID
+    """
+    house_id = house_node['id']
+    house_name = house_node['name']
+
+    print(f"已选择房屋：{house_name}")
+    print(f"正在创建电话催缴记录...")
+
+    result = create_phone_call_log(int(community_id), int(house_id), call_user_uid)
+
+    if result is not None:
+        print(f"\n✅ 电话催缴记录创建成功！\n")
+        print(f"**小区**: {community_name}")
+        print(f"**房屋**: {house_name}")
+        print(f"**记录类型**: 电话催缴")
+        logger.info(f"电话催缴记录创建完成: 小区={community_name}, 房屋={house_name}")
+    else:
+        print(f"\n✗ 电话催缴记录创建失败，请查看日志获取详细信息")
+
+
+def create_phone_call_log_by_name(charge_system_name=None, community_name=None, keyword=None):
+    """
+    通过名称智能匹配房屋并创建电话催缴记录
+
+    Args:
+        charge_system_name: 收费系统名称
+        community_name: 小区名称
+        keyword: 房屋位置关键词
+    """
+    # 检查必要参数
+    if not charge_system_name:
+        print("NEED_INFO: 请提供收费系统名称")
+        print("提示：可以先使用 list_charge_systems 命令查看可用的收费系统")
+        return
+
+    if not community_name:
+        print("NEED_INFO: 请提供小区名称")
+        return
+
+    if not keyword:
+        print("NEED_INFO: 请提供房屋位置关键词（如楼栋/单元/房屋号）")
+        return
+
+    # 获取当前登录用户ID
+    session = session_mgr.get_session()
+    if not session or 'extUIMsg' not in session:
+        print("无法获取当前登录用户ID，请先登录")
+        return
+    ext_info = session['extUIMsg']
+    if 'uid' not in ext_info:
+        print("无法获取当前登录用户ID，请先登录")
+        return
+    call_user_uid = int(ext_info['uid'])
+
+    # 获取收费系统映射
+    system_map = get_user_charge_systems(return_map=True)
+    if not system_map:
+        print("获取收费系统列表失败")
+        return
+
+    # 查找收费系统 ID
+    charge_system_id = system_map.get(charge_system_name)
+    if not charge_system_id:
+        print(f"未找到收费系统：{charge_system_name}")
+        print("可用的收费系统：" + ", ".join(system_map.keys()))
+        return
+
+    # 搜索小区
+    community_map = search_community(charge_system_id, community_name, return_map=True)
+    if community_map is None:
+        print("搜索小区失败")
+        return
+
+    if not community_map:
+        print(f"未找到匹配的小区：{community_name}")
+        return
+
+    if len(community_map) > 1:
+        # 多个匹配，列出供用户选择
+        print(f"找到多个匹配的小区，请使用完整的小区名称重新查询：")
+        for name in community_map.keys():
+            print(f"  - {name}")
+        return
+
+    # 只有一个匹配，继续处理
+    comm_name, comm_id = next(iter(community_map.items()))
+    print(f"找到小区：{comm_name}")
+
+    # 先尝试从缓存加载上一次的匹配列表
+    cache_data = load_match_cache()
+    if cache_data and str(cache_data.get('community_id')) == str(comm_id):
+        cached_nodes = cache_data.get('nodes', [])
+        if cached_nodes:
+            # 尝试解析用户选择
+            selected_node = parse_user_selection(keyword, cached_nodes)
+            if selected_node:
+                logger.info(f"用户选择了: {selected_node.get('name')}")
+                # 清除缓存
+                clear_match_cache()
+                # 检查是否是房屋级别
+                if selected_node['level'] != 'house':
+                    print(f"请选择具体的房屋创建电话催缴记录，当前选择的是{selected_node['name']}（{selected_node['level']}）")
+                    return
+                # 继续处理
+                return _process_create_phone_call_log(str(comm_id), selected_node, comm_name, call_user_uid)
+            else:
+                # 解析失败，清除缓存，按新关键词重新搜索
+                logger.info("无法解析用户选择，清除缓存并重新搜索")
+                clear_match_cache()
+
+    # 清理关键词
+    clean_keyword = keyword.replace("电话催缴", "").replace("催缴", "").replace("记录", "").replace("的", "").strip()
+
+    # 检查是否使用精确匹配
+    use_exact_match = "/" in clean_keyword
+
+    # 获取完整房屋结构
+    household_data = search_household_structure(str(comm_id), "")
+
+    if household_data is None:
+        print("搜索房屋结构失败")
+        return
+
+    # 找出匹配的节点
+    if use_exact_match:
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, exact_match=True)
+        if not matching_nodes:
+            logger.info("精确匹配未找到结果，使用模糊匹配")
+            keywords = clean_keyword.split("/")
+            search_kw = keywords[-1] if keywords else clean_keyword
+            household_data_for_search = search_household_structure(str(comm_id), search_kw)
+            if household_data_for_search:
+                household_data = household_data_for_search
+            matching_nodes = find_matching_nodes(household_data, clean_keyword)
+    else:
+        keywords = split_keywords(clean_keyword)
+        search_kw = " ".join(keywords)
+        household_data_for_search = search_household_structure(str(comm_id), search_kw)
+        if household_data_for_search:
+            household_data = household_data_for_search
+        matching_nodes = find_matching_nodes(household_data, clean_keyword)
+
+    if not matching_nodes:
+        # 尝试宽松匹配
+        logger.info(f"严格匹配未找到，尝试宽松匹配: {clean_keyword}")
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, relaxed_match=True)
+
+    if not matching_nodes:
+        # 仍然没找到，生成候选列表
+        logger.info(f"宽松匹配也未找到，生成候选列表")
+        candidates = generate_candidates(household_data, clean_keyword)
+        if candidates:
+            print_candidates(clean_keyword, candidates)
+        else:
+            print(f"未找到与'{clean_keyword}'匹配的楼栋/单元/房屋，请确认输入是否正确")
+        return
+
+    if len(matching_nodes) == 1:
+        node = matching_nodes[0]
+        if node['level'] != 'house':
+            print(f"请选择具体的房屋创建电话催缴记录，当前选择的是{node['name']}（{node['level']}）")
+            return
+        return _process_create_phone_call_log(str(comm_id), node, comm_name, call_user_uid)
+    else:
+        save_match_cache(comm_id, matching_nodes)
+        print("MULTI_MATCH:")
+        for idx, node in enumerate(matching_nodes, 1):
+            level_label = {
+                'building': '楼栋',
+                'unit': '单元',
+                'house': '房屋'
+            }.get(node['level'], '未知')
+            print(f"{idx}. {node['name']} ({level_label})")
+
+
 if __name__ == "__main__":
     command = sys.argv[1] if len(sys.argv) > 1 else ""
 
@@ -6623,6 +6863,17 @@ if __name__ == "__main__":
             community_name = sys.argv[3]
             keyword = sys.argv[4]
             generate_charge_work_order_by_name(charge_system_name, community_name, keyword)
+    elif command == "create_phone_call_log":
+        # 创建单个房屋电话催缴记录（推荐，智能匹配，一步完成）
+        if len(sys.argv) < 5:
+            print("错误：请提供收费系统名称、小区名称和房屋关键词")
+            print("用法: python3 main.py create_phone_call_log <收费系统名称> <小区名称> <房屋关键词>")
+            print("示例: python3 main.py create_phone_call_log 收费系统 小区 1栋/1单元/101")
+        else:
+            charge_system_name = sys.argv[2]
+            community_name = sys.argv[3]
+            keyword = sys.argv[4]
+            create_phone_call_log_by_name(charge_system_name, community_name, keyword)
     elif command == "confirm_charge_work_order":
         # 确认生成催缴工单，处理代办人选择
         if len(sys.argv) < 3:
@@ -6673,3 +6924,4 @@ if __name__ == "__main__":
         print("  generate_collection_url <收费系统名称> <小区名称> <房屋关键词> - 生成房屋所有欠费账单的催缴链接（一步完成）")
         print("  generate_charge_work_order <收费系统名称> <小区名称> <房屋关键词> - 生成催缴工单（推荐，智能匹配，两步完成）")
         print("  confirm_charge_work_order <序号> - 确认选择代办人，生成催缴工单")
+        print("  create_phone_call_log <收费系统名称> <小区名称> <房屋关键词> - 创建电话催缴记录（一步完成）")
