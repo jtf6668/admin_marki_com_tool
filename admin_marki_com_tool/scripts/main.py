@@ -5000,6 +5000,45 @@ def clear_late_money_confirmation_cache():
         logger.info("违约金设置确认缓存已清除")
 
 
+# === 预存款充值确认缓存相关 ===
+def get_deposit_recharge_confirmation_cache_path():
+    """获取预存款充值确认缓存文件路径"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(script_dir, '.deposit_recharge_confirmation_cache.json')
+
+
+def save_deposit_recharge_confirmation_cache(cache_data):
+    """保存待确认预存款充值信息到缓存"""
+    cache_path = get_deposit_recharge_confirmation_cache_path()
+    try:
+        with open(cache_path, 'w', encoding='utf-8') as f:
+            json.dump(cache_data, f, indent=2, ensure_ascii=False)
+        logger.info("预存款充值确认缓存已保存")
+    except Exception as e:
+        logger.error(f"保存预存款充值确认缓存失败: {e}")
+
+
+def load_deposit_recharge_confirmation_cache():
+    """从缓存加载待确认预存款充值信息"""
+    cache_path = get_deposit_recharge_confirmation_cache_path()
+    if not os.path.exists(cache_path):
+        return None
+    try:
+        with open(cache_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"读取预存款充值确认缓存失败: {e}")
+        return None
+
+
+def clear_deposit_recharge_confirmation_cache():
+    """清除预存款充值确认缓存"""
+    cache_path = get_deposit_recharge_confirmation_cache_path()
+    if os.path.exists(cache_path):
+        os.remove(cache_path)
+        logger.info("预存款充值确认缓存已清除")
+
+
 # === 支付方式映射 ===
 def get_pay_type_by_name(pay_type_name: str) -> int:
     """根据支付方式中文名称获取 payType 编码"""
@@ -8245,6 +8284,409 @@ def confirm_collect_cash_pledge(confirmation_input: str) -> None:
     logger.info(f"收取押金完成: {community_name} / {node_name} / {pledge_item_name} / {amount_yuan:.2f}")
 
 
+# === 预存款充值功能 ===
+def recharge_deposit_house_by_name(charge_system_name: str, community_name: str,
+                                   house_keyword: str, deposit_type: str,
+                                   recharge_amount_yuan: float, pay_type_name: str = None) -> None:
+    """入口函数：通过名称匹配房屋，发起预存款充值流程
+
+    Args:
+        charge_system_name: 收费系统名称
+        community_name: 小区名称
+        house_keyword: 房屋搜索关键词
+        deposit_type: 预存款类型名称
+        recharge_amount_yuan: 充值金额（元）
+        pay_type_name: 支付方式名称（可选）
+    """
+    # 检查必要参数
+    if not charge_system_name:
+        print("NEED_INFO: 请提供收费系统名称")
+        print("提示：可以先使用 list_charge_systems 命令查看可用的收费系统")
+        return
+    if not community_name:
+        print("NEED_INFO: 请提供小区名称")
+        return
+    if not house_keyword:
+        print("NEED_INFO: 请提供房屋位置关键词（如楼栋/单元/房屋号）")
+        return
+    if not deposit_type:
+        print("NEED_INFO: 请提供预存款类型名称（如水电费、物业费）")
+        return
+    if recharge_amount_yuan <= 0:
+        print("错误：充值金额必须大于0")
+        return
+
+    # 1. 获取收费系统和小区信息
+    system_map = get_user_charge_systems(return_map=True)
+    if not system_map:
+        print("获取收费系统列表失败")
+        return
+
+    # 查找收费系统 ID
+    charge_system_id = system_map.get(charge_system_name)
+    if not charge_system_id:
+        print(f"未找到收费系统：{charge_system_name}")
+        print("可用的收费系统：" + ", ".join(system_map.keys()))
+        return
+    print(f"找到收费系统：{charge_system_name}")
+
+    # 搜索小区
+    community_map = search_community(charge_system_id, community_name, return_map=True)
+    if not community_map:
+        print(f"在收费系统 '{charge_system_name}' 中未找到小区 '{community_name}'，请重新搜索")
+        return
+
+    if len(community_map) > 1:
+        print(f"找到多个匹配小区，请选择：")
+        for name, comm_id in community_map.items():
+            print(f"  - {name} (ID: {comm_id})")
+        print(f"\n请使用更精确的小区名称重新搜索")
+        return
+
+    # 只有一个匹配小区，直接使用
+    community_name_result, comm_id = next(iter(community_map.items()))
+    community_id = str(comm_id)
+    print(f"找到小区：{community_name_result}")
+
+    # 2. 搜索房屋结构匹配
+    # 先尝试从缓存加载上一次的匹配列表
+    cache_data = load_match_cache()
+    if cache_data and str(cache_data.get('community_id')) == str(community_id):
+        cached_nodes = cache_data.get('nodes', [])
+        if cached_nodes:
+            # 尝试解析用户选择
+            selected_node = parse_user_selection(house_keyword, cached_nodes)
+            if selected_node:
+                logger.info(f"用户选择了: {selected_node.get('name')}")
+                # 清除缓存
+                clear_match_cache()
+                # 检查是否是房屋级别
+                if selected_node['level'] != 'house':
+                    print(f"请选择具体的房屋，当前选择的是{selected_node['name']}（{selected_node['level']}）")
+                    return
+                # 继续处理
+                asset_id = str(selected_node['id'])
+                asset_type = 1
+                node_name = selected_node['name']
+                logger.info(f"从缓存获取房屋: {node_name}, ID={asset_id}")
+    else:
+        selected_node = None
+
+    if 'asset_id' not in locals():
+        # 清理关键词
+        clean_keyword = house_keyword.replace("预存", "").replace("充值", "").replace("的", "").strip()
+
+        # 检查是否使用精确匹配
+        use_exact_match = "/" in clean_keyword
+
+        # 获取完整房屋结构
+        household_data = search_household_structure(str(community_id), "")
+        if household_data is None:
+            print("搜索房屋结构失败")
+            return
+
+        # 找出匹配的节点
+        if use_exact_match:
+            matching_nodes = find_matching_nodes(household_data, clean_keyword, exact_match=True)
+            if not matching_nodes:
+                logger.info("精确匹配未找到结果，使用模糊匹配")
+                keywords = clean_keyword.split("/")
+                search_kw = keywords[-1] if keywords else clean_keyword
+                household_data_for_search = search_household_structure(str(community_id), search_kw)
+                if household_data_for_search:
+                    household_data = household_data_for_search
+                matching_nodes = find_matching_nodes(household_data, clean_keyword)
+        else:
+            keywords = split_keywords(clean_keyword)
+            search_kw = keywords[-1] if keywords else clean_keyword
+            household_data_for_search = search_household_structure(str(community_id), search_kw)
+            if household_data_for_search:
+                household_data = household_data_for_search
+            matching_nodes = find_matching_nodes(household_data, clean_keyword)
+
+        if not matching_nodes:
+            print(f"未找到匹配的房屋: {house_keyword}")
+            return
+
+        if len(matching_nodes) > 1:
+            # 多个匹配，保存到缓存并列出供用户选择
+            print(f"找到多个匹配的房屋，请选择序号：")
+            for idx, node in enumerate(matching_nodes, 1):
+                print(f"  {idx}. {node['name']} ({node['level']})")
+            save_match_cache(community_id, matching_nodes)
+            print(f"\n请使用序号重新选择，例如：confirm_recharge_deposit 1")
+            return
+
+        # 只有一个匹配，直接使用
+        selected_node = matching_nodes[0]
+        if selected_node['level'] != 'house':
+            print(f"匹配结果不是房屋，请选择具体的房屋，当前匹配到: {selected_node['name']}（{selected_node['level']}）")
+            return
+        asset_id = str(selected_node['id'])
+        asset_type = 1
+        node_name = selected_node['name']
+        logger.info(f"匹配到房屋: {node_name}, ID={asset_id}")
+
+    print(f"已选择房屋：{node_name}")
+
+    # 3. 处理支付方式
+    pay_type = get_pay_type_by_name(pay_type_name) if pay_type_name else 2
+    pay_type_name_result = get_pay_name_by_type(pay_type)
+
+    # 4. 继续处理（查询预存款账户并匹配）
+    process_deposit_recharge_after_match(
+        charge_system_name=charge_system_name,
+        community_id=community_id,
+        community_name=community_name_result,
+        asset_id=asset_id,
+        asset_type=asset_type,
+        node_name=node_name,
+        deposit_type=deposit_type,
+        recharge_amount_yuan=recharge_amount_yuan,
+        pay_type=pay_type,
+        pay_type_name=pay_type_name_result
+    )
+
+
+def process_deposit_recharge_after_match(charge_system_name: str, community_id: str, community_name: str,
+                                         asset_id: str, asset_type: int, node_name: str,
+                                         deposit_type: str, recharge_amount_yuan: float,
+                                         pay_type: int, pay_type_name: str) -> None:
+    """查询预存款账户并进行匹配，输出确认信息
+
+    Args:
+        charge_system_name: 收费系统名称
+        community_id: 小区ID
+        community_name: 小区名称
+        asset_id: 房屋ID
+        asset_type: 资产类型
+        node_name: 房屋名称
+        deposit_type: 预存款类型
+        recharge_amount_yuan: 充值金额（元）
+        pay_type: 支付类型编码
+        pay_type_name: 支付类型名称
+    """
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
+
+    # 1. 调用API查询预存款账户列表 - GET 请求，参数在URL中
+    logger.info(f"查询预存款账户：小区ID={community_id}, 房屋ID={asset_id}")
+
+    import random
+    url = (f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/getHouseDepositAccount"
+           f"?communityId={int(community_id)}&houseId={int(asset_id)}&r={random.random()}")
+
+    try:
+        response = requests.get(
+            url,
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"查询预存款账户失败，状态码: {response.status_code}, 响应: {response.text}")
+            print(f"✗ 查询预存款账户失败，状态码: {response.status_code}")
+            return
+
+        data = response.json()
+        if data.get('code') != 0:
+            logger.error(f"查询预存款账户失败: {data.get('msg')}")
+            print(f"✗ 查询预存款账户失败: {data.get('msg')}")
+            return
+
+        account_list = data.get('data', {}).get('accountDetails', [])
+        logger.info(f"查询到 {len(account_list)} 个预存款账户")
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"查询预存款账户异常: {e}")
+        print(f"✗ 查询预存款账户发生网络异常，请重试")
+        return
+
+    # 2. 模糊匹配预存款账户
+    if not account_list:
+        print(f"✗ 当前房屋未创建任何预存款账户，请先在系统中创建")
+        return
+
+    # 模糊匹配
+    matched_accounts = []
+    deposit_type_lower = deposit_type.lower()
+    for account in account_list:
+        category_name = account.get('categoryName', '').lower()
+        if deposit_type_lower in category_name:
+            matched_accounts.append(account)
+
+    # 3. 根据匹配结果处理
+    if len(matched_accounts) == 0:
+        # 未找到匹配，列出所有现有账户
+        print(f"\n✗ 当前房屋未找到匹配的预存款账户：\n")
+        print(f"小区：{community_name}")
+        print(f"房屋：{node_name}")
+        print(f"搜索类型：{deposit_type}")
+        print(f"\n现有预存款账户：")
+        for account in account_list:
+            amount_yuan = account.get('amount', 0) / 100
+            print(f"- {account.get('categoryName')} (余额：¥ {amount_yuan:.2f})")
+        print(f"\n请确认预存款类型名称是否正确，或先在系统中创建该类型预存款账户。")
+        return
+
+    elif len(matched_accounts) > 1:
+        # 多个匹配，让用户选择
+        print(f"\n找到多个匹配的预存款账户，请选择：\n")
+        for idx, account in enumerate(matched_accounts, 1):
+            amount_yuan = account.get('amount', 0) / 100
+            print(f"{idx}. {account.get('categoryName')} (当前余额：¥ {amount_yuan:.2f})")
+        print(f"\n请输入序号选择：")
+        # TODO: 暂不支持多选择，要求用户更精确输入
+        return
+
+    else:
+        # 单个匹配，准备确认
+        matched_account = matched_accounts[0]
+        amount_fen = int(round(recharge_amount_yuan * 100))
+        current_balance_yuan = matched_account.get('amount', 0) / 100
+
+        # 保存缓存
+        cache_data = {
+            "charge_system_name": charge_system_name,
+            "community_id": community_id,
+            "community_name": community_name,
+            "asset_id": asset_id,
+            "asset_type": asset_type,
+            "node_name": node_name,
+            "categoryId": matched_account.get('categoryId'),
+            "categoryName": matched_account.get('categoryName'),
+            "accountID": matched_account.get('accountID'),
+            "current_balance": matched_account.get('amount', 0),
+            "recharge_amount_fen": amount_fen,
+            "recharge_amount_yuan": recharge_amount_yuan,
+            "pay_type": pay_type,
+            "pay_type_name": pay_type_name
+        }
+        save_deposit_recharge_confirmation_cache(cache_data)
+
+        # 输出确认信息
+        print(f"\n找到预存款账户，请确认以下充值信息：\n")
+        print(f"----------------------------------------")
+        print(f"小区：{community_name}")
+        print(f"房屋：{node_name}")
+        print(f"预存款账户：{matched_account.get('categoryName')} (categoryID: {matched_account.get('categoryId')})")
+        print(f"当前余额：¥ {current_balance_yuan:.2f}")
+        print(f"充值金额：¥ {recharge_amount_yuan:.2f}")
+        print(f"支付方式：{pay_type_name}")
+        print(f"----------------------------------------\n")
+        print(f"请确认是否执行充值？")
+        print(f"- 运行命令 `confirm_recharge_deposit yes` 确认充值")
+        print(f"- 运行命令 `confirm_recharge_deposit no` 取消")
+        return
+
+
+def confirm_deposit_recharge(confirmation_input: str) -> None:
+    """第二步：确认预存款充值，执行实际充值操作
+
+    Args:
+        confirmation_input: 用户确认输入 ('yes'/'no')
+    """
+    # 加载缓存
+    pending_data = load_deposit_recharge_confirmation_cache()
+    if not pending_data:
+        print("✗ 没有待确认的预存款充值信息，或信息已过期，请重新查询")
+        return
+
+    # 提取信息
+    community_id = pending_data['community_id']
+    community_name = pending_data['community_name']
+    asset_id = pending_data['asset_id']
+    node_name = pending_data['node_name']
+    category_id = pending_data['categoryId']
+    category_name = pending_data['categoryName']
+    current_balance = pending_data['current_balance']
+    recharge_amount_fen = pending_data['recharge_amount_fen']
+    recharge_amount_yuan = pending_data['recharge_amount_yuan']
+    pay_type = pending_data['pay_type']
+    pay_type_name = pending_data['pay_type_name']
+
+    # 用户取消
+    if confirmation_input.lower() == 'no' or confirmation_input.lower() == 'n':
+        print("操作已取消")
+        clear_deposit_recharge_confirmation_cache()
+        return
+
+    if confirmation_input.lower() != 'yes' and confirmation_input.lower() != 'y':
+        print("输入错误，请输入 yes 或 no")
+        return
+
+    # 调用充值API
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
+
+    # 获取当前时间戳
+    import time
+    pay_time = int(time.time())
+
+    payload = {
+        "houseID": int(asset_id),
+        "open": 0,
+        "payType": pay_type,
+        "payTime": pay_time,
+        "categoryId": category_id,
+        "money": recharge_amount_fen
+    }
+
+    logger.info(f"执行预存款充值：小区ID={community_id}, 房屋ID={asset_id}, 分类ID={category_id}, 金额={recharge_amount_fen}分")
+
+    try:
+        response = requests.post(
+            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/rechargeDepositV2",
+            json=payload,
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"预存款充值失败，状态码: {response.status_code}, 响应: {response.text}")
+            print(f"✗ 预存款充值失败，状态码: {response.status_code}")
+            return
+
+        data = response.json()
+        if data.get('code') != 0:
+            logger.error(f"预存款充值失败: {data.get('msg')}")
+            print(f"✗ 预存款充值失败: {data.get('msg')}")
+            return
+
+        # 充值成功
+        logger.info(f"预存款充值成功: {data}")
+        current_balance_yuan = current_balance / 100
+        new_balance_yuan = (current_balance + recharge_amount_fen) / 100
+        process_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        print(f"\n✓ 预存款充值成功！\n")
+        print(f"----------------------------------------")
+        print(f"小区：{community_name}")
+        print(f"房屋：{node_name}")
+        print(f"预存款类型：{category_name}")
+        print(f"充值金额：¥ {recharge_amount_yuan:.2f}")
+        print(f"支付方式：{pay_type_name}")
+        print(f"原余额：¥ {current_balance_yuan:.2f}")
+        print(f"新余额：¥ {new_balance_yuan:.2f}")
+        print(f"充值时间：{process_time_str}")
+        print(f"----------------------------------------\n")
+
+        # 清除缓存
+        clear_deposit_recharge_confirmation_cache()
+        logger.info(f"预存款充值完成: {community_name} / {node_name} / {category_name} / {recharge_amount_yuan:.2f}")
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"预存款充值发生异常: {e}")
+        print(f"✗ 预存款充值发生网络异常，请重试")
+        return None
+
+
 def generate_web_bill_share_url(community_id: int, asset_id: int, bill_ids: list) -> dict:
     """
     调用 API 生成微信账单分享链接
@@ -10223,6 +10665,37 @@ if __name__ == "__main__":
         else:
             confirmation_input = sys.argv[2]
             confirm_collect_cash_pledge(confirmation_input)
+    elif command == "recharge_deposit":
+        # 预存款充值第一步：查询匹配，等待确认
+        if len(sys.argv) < 6:
+            print("错误：参数不足")
+            print("用法: python3 main.py recharge_deposit <收费系统名称> <小区名称> <房屋关键词> <预存款类型> <充值金额> [支付方式]")
+            print("示例（现金支付）: python3 main.py recharge_deposit \"收费系统\" \"小区\" \"1栋/1单元/101\" \"水电费\" 100")
+            print("示例（微信支付）: python3 main.py recharge_deposit \"收费系统\" \"小区\" \"1栋/1单元/101\" \"物业费\" 200 微信")
+        else:
+            charge_system_name = sys.argv[2]
+            community_name = sys.argv[3]
+            keyword = sys.argv[4]
+            deposit_type = sys.argv[5]
+
+            try:
+                recharge_amount_yuan = float(sys.argv[6])
+            except ValueError:
+                print("错误：充值金额必须是数字，请检查参数位置")
+                exit(1)
+
+            pay_type_name = sys.argv[7] if len(sys.argv) >= 8 else None
+            recharge_deposit_house_by_name(charge_system_name, community_name, keyword, deposit_type, recharge_amount_yuan, pay_type_name)
+    elif command == "confirm_recharge_deposit":
+        # 确认预存款充值，执行操作
+        if len(sys.argv) < 3:
+            print("错误：请提供确认选项（yes/no）")
+            print("用法: python3 main.py confirm_recharge_deposit <yes/no>")
+            print("示例: python3 main.py confirm_recharge_deposit yes")
+            print("示例: python3 main.py confirm_recharge_deposit no")
+        else:
+            confirmation_input = sys.argv[2]
+            confirm_deposit_recharge(confirmation_input)
     else:
         print("错误：未知的指令或参数不足")
         print("可用指令:")
@@ -10274,3 +10747,5 @@ if __name__ == "__main__":
         print("  confirm_clear_late_money <yes/no/序号> - 确认设置违约金，处理用户选择")
         print("  collect_cash_pledge <收费系统名称> <小区名称> <房屋关键词> <押金名称> <金额> [支付方式] - 收取押金（装修押金、水电押金等，推荐，智能匹配，两步完成）")
         print("  confirm_collect_cash_pledge <yes/no> - 确认收取押金，处理用户选择")
+        print("  recharge_deposit <收费系统名称> <小区名称> <房屋关键词> <预存款类型> <充值金额> [支付方式] - 预存款充值（水电费预存款、物业费预存款等，推荐，智能匹配，两步完成）")
+        print("  confirm_recharge_deposit <yes/no> - 确认预存款充值，执行充值")
