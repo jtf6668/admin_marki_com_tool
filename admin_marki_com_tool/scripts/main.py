@@ -4961,6 +4961,45 @@ def clear_discount_confirmation_cache():
         logger.info("优惠确认缓存已清除")
 
 
+# === 违约金设置确认缓存相关 ===
+def get_late_money_confirmation_cache_path():
+    """获取违约金设置确认缓存文件路径"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(script_dir, '.late_money_confirmation_cache.json')
+
+
+def save_late_money_confirmation_cache(cache_data):
+    """保存待确认违约金信息到缓存"""
+    cache_path = get_late_money_confirmation_cache_path()
+    try:
+        with open(cache_path, 'w', encoding='utf-8') as f:
+            json.dump(cache_data, f, indent=2, ensure_ascii=False)
+        logger.info("违约金设置确认缓存已保存")
+    except Exception as e:
+        logger.error(f"保存违约金设置确认缓存失败: {e}")
+
+
+def load_late_money_confirmation_cache():
+    """从缓存加载待确认违约金信息"""
+    cache_path = get_late_money_confirmation_cache_path()
+    if not os.path.exists(cache_path):
+        return None
+    try:
+        with open(cache_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"读取违约金设置确认缓存失败: {e}")
+        return None
+
+
+def clear_late_money_confirmation_cache():
+    """清除违约金设置确认缓存"""
+    cache_path = get_late_money_confirmation_cache_path()
+    if os.path.exists(cache_path):
+        os.remove(cache_path)
+        logger.info("违约金设置确认缓存已清除")
+
+
 # === 支付方式映射 ===
 def get_pay_type_by_name(pay_type_name: str) -> int:
     """根据支付方式中文名称获取 payType 编码"""
@@ -7014,6 +7053,627 @@ def confirm_discount(confirmation_input: str):
     logger.info(f"优惠完成，成功 {len(selected_bills)} 个账单，总优惠 {discount_amount_yuan:.2f}")
 
 
+def clear_late_money_house_bills(community_id: str, asset_id: str, asset_type: int, node_name: str,
+                       community_name: str, start_time: int, end_time: int, charge_item_id: str = None, set_amount_yuan: float = 0.0):
+    """
+    查询特定房屋的账单并准备设置违约金（通常用于清零）
+
+    Args:
+        community_id: 小区ID
+        asset_id: 资产ID（房屋ID）
+        asset_type: 资产类型
+        node_name: 节点名称（房屋位置）
+        community_name: 小区名称
+        start_time: 开始时间戳
+        end_time: 结束时间戳
+        charge_item_id: 收费项目ID，None表示不筛选
+        set_amount_yuan: 要设置的违约金金额，单位元，默认0表示清零
+    """
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
+
+    # 构建查询参数
+    payload = {
+        "communityID": int(community_id),
+        "assetType": asset_type,
+        "assetId": int(asset_id),
+        "payStatus": 0,  # 只查询未支付账单
+        "index": "",
+        "selectChargeItemList": [int(charge_item_id)] if charge_item_id else [],
+        "selectChargeItemAll": charge_item_id is None,
+        "generateStartTime": start_time,
+        "generateEndTime": end_time,
+        "dealLogId": 0,
+        "categoryId": 0,
+        "sortType": 1,
+        "chargeItemVersion": 2,
+        "chargeItemCategorys": []
+    }
+
+    url = f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/getCashierDeskListByIndex"
+
+    try:
+        response = requests.post(
+            url,
+            json=payload,
+            headers=headers,
+            timeout=30
+        )
+    except requests.exceptions.RequestException as e:
+        logger.error(f"查询账单接口调用发生异常: {e}")
+        print(f"查询账单失败：{e}")
+        return None
+
+    if response.status_code != 200:
+        logger.error(f"查询账单失败，状态码: {response.status_code}, 响应: {response.text}")
+        print(f"查询账单失败，HTTP状态码 {response.status_code}")
+        return None
+
+    result = response.json()
+    if result.get('code') != 0:
+        msg = result.get('msg', '未知错误')
+        logger.error(f"查询账单返回错误: code={result.get('code')}, msg={msg}")
+        print(f"查询账单失败：{msg}")
+        return None
+
+    result_data = result.get('data', {})
+    pending_bills = []
+    total_original_late = 0.0
+
+    # 解析账单列表，API 结构：data -> list[] (按日期分组)
+    # date 分组下可能有：
+    # 1. categoryData[] -> records[] (每个账单)
+    # 2. 直接在 date 分组下有 records[] (每个账单)
+    # 两种情况都要遍历，确保不遗漏
+    date_list = result_data.get('list', [])
+    for date_item in date_list:
+        # 遍历 categoryData 中的 records
+        for category_data in date_item.get('categoryData', []):
+            for record in category_data.get('records', []):
+                # 如果有收费项目筛选，只保留匹配的
+                if charge_item_id and str(record.get('chargeItemId')) != str(charge_item_id):
+                    continue
+                # 只保留未支付账单，字段是 state，0 表示未支付
+                if record.get('state') != 0:
+                    continue
+                bill_info = {
+                    'id': record.get('id'),
+                    'version': record.get('version', 0),
+                    'chargeItemName': record.get('chargeItemName', '未知收费项目'),
+                    'amount': record.get('billAmount', 0),  # 账单本金，单位分
+                    'lateMoney': record.get('lateMoneyAmount', 0),  # 当前违约金，单位分 - 字段名是 lateMoneyAmount
+                    'generateTime': record.get('generateTime', 0),
+                    'date': record.get('date', '未知月份')  # 格式就是 date 字段，YYYY-MM
+                }
+                pending_bills.append(bill_info)
+                total_original_late += bill_info['lateMoney']
+        # 遍历 date 分组直接下的 records
+        for record in date_item.get('records', []):
+            # 如果有收费项目筛选，只保留匹配的
+            if charge_item_id and str(record.get('chargeItemId')) != str(charge_item_id):
+                continue
+            # 只保留未支付账单，字段是 state，0 表示未支付
+            if record.get('state') != 0:
+                continue
+            bill_info = {
+                'id': record.get('id'),
+                'version': record.get('version', 0),
+                'chargeItemName': record.get('chargeItemName', '未知收费项目'),
+                'amount': record.get('billAmount', 0),  # 账单本金，单位分
+                'lateMoney': record.get('lateMoneyAmount', 0),  # 当前违约金，单位分 - 字段名是 lateMoneyAmount
+                'generateTime': record.get('generateTime', 0),
+                'date': record.get('date', '未知月份')  # 格式就是 date 字段，YYYY-MM
+            }
+            pending_bills.append(bill_info)
+            total_original_late += bill_info['lateMoney']
+
+    if not pending_bills:
+        print(f"未找到任何未支付账单，请检查时间范围和收费项目")
+        print(f"小区：{community_name}")
+        print(f"房屋：{node_name}")
+        start_display = datetime.fromtimestamp(start_time).strftime('%Y-%m-%d')
+        end_display = datetime.fromtimestamp(end_time).strftime('%Y-%m-%d')
+        print(f"时间范围：{start_display} 至 {end_display}")
+        return None
+
+    logger.info(f"查询到 {len(pending_bills)} 个未支付账单，原总违约金 {total_original_late / 100:.2f} 元")
+
+    # 第二步：检查是否有正在支付中的订单
+    print(f"\n正在检查账单支付状态...")
+    bill_ids = [bill['id'] for bill in pending_bills]
+    check_payload = {
+        "selectList": bill_ids
+    }
+    check_url = f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/checkInPayBill"
+    try:
+        check_response = requests.post(
+            check_url,
+            json=check_payload,
+            headers=headers,
+            timeout=10
+        )
+        if check_response.status_code != 200:
+            logger.error(f"检查支付中订单失败，状态码: {check_response.status_code}")
+            print(f"✗ 检查支付中订单失败，请稍后重试")
+            return None
+        check_data = check_response.json()
+        if check_data.get('code') != 0:
+            logger.error(f"检查支付中订单返回错误: {check_data.get('msg')}")
+            print(f"✗ 检查支付中订单失败: {check_data.get('msg')}")
+            return None
+        has_in_pay = check_data.get('data', {}).get('hasInPay', False)
+        if has_in_pay:
+            print(f"✗ 选中账单中有正在支付中的订单，请稍后再试")
+            logger.warning(f"存在支付中订单，终止操作")
+            return None
+    except Exception as e:
+        logger.error(f"检查支付中订单异常: {e}")
+        print(f"✗ 检查支付中订单发生异常，请查看日志")
+        return None
+
+    # 转换开始结束时间为可读格式
+    start_dt = datetime.fromtimestamp(start_time)
+    end_dt = datetime.fromtimestamp(end_time)
+    start_display = start_dt.strftime('%Y-%m-%d')
+    end_display = end_dt.strftime('%Y-%m-%d')
+
+    # 计算总金额
+    total_original_late_yuan = total_original_late / 100
+
+    # 保存待确认数据到缓存
+    cache_data = {
+        'community_id': community_id,
+        'asset_id': asset_id,
+        'asset_type': asset_type,
+        'node_name': node_name,
+        'community_name': community_name,
+        'start_time': start_time,
+        'end_time': end_time,
+        'set_amount_yuan': set_amount_yuan,
+        'pending_bills': pending_bills
+    }
+    save_late_money_confirmation_cache(cache_data)
+
+    # 输出结果给用户确认
+    print(f"\n### 待处理账单信息\n")
+    print(f"**小区**: {community_name}")
+    print(f"**房屋**: {node_name}")
+    print(f"**时间范围**: {start_display} 至 {end_display}")
+    print(f"**设置违约金金额**: ¥ {set_amount_yuan:.2f}")
+    print(f"**待处理账单数**: {len(pending_bills)} 条")
+    print(f"**原总违约金**: ¥ {total_original_late_yuan:.2f}\n")
+
+    print("账单列表:")
+    for idx, bill in enumerate(pending_bills, 1):
+        principal_yuan = bill['amount'] / 100
+        late_yuan = bill['lateMoney'] / 100
+        date_display = bill['date']
+        try:
+            y, m = date_display.split('-')
+            date_display = f"{y}年{m}月"
+        except:
+            pass
+        print(f"{idx}. {date_display} {bill['chargeItemName']} - 本金 ¥ {principal_yuan:.2f}, 当前违约金 ¥ {late_yuan:.2f}")
+
+    print(f"\n请确认是否进行操作？")
+    if set_amount_yuan == 0:
+        print(f"- 运行命令 `confirm_clear_late_money yes` 将所有账单违约金清零")
+    else:
+        print(f"- 运行命令 `confirm_clear_late_money yes` 将所有账单违约金设置为 ¥ {set_amount_yuan:.2f}（总金额）")
+    print(f"- 运行命令 `confirm_clear_late_money <序号>`（如`confirm_clear_late_money 1`或`confirm_clear_late_money 1,2`）只处理指定账单")
+    print(f"- 运行命令 `confirm_clear_late_money no` 取消")
+
+    logger.info(f"已保存待确认数据，等待用户确认，待处理账单数: {len(pending_bills)}")
+    return cache_data
+
+
+def clear_late_money_by_name(charge_system_name: str, community_name: str, keyword: str,
+                      start_date_str: str = None, end_date_str: str = None,
+                      charge_item_name: str = None, set_amount_yuan: float = 0.0):
+    """
+    通过名称智能匹配房屋并查询待处理账单（两步完成，准备设置违约金）
+
+    Args:
+        charge_system_name: 收费系统名称
+        community_name: 小区名称
+        keyword: 房屋位置关键词
+        start_date_str: 开始日期字符串（YYYY-MM-DD），None表示默认当月1日
+        end_date_str: 结束日期字符串（YYYY-MM-DD），None表示默认今天
+        charge_item_name: 收费项目名称，None表示不筛选
+        set_amount_yuan: 要设置的违约金金额，默认0表示清零
+    """
+    # 检查必要参数
+    if not charge_system_name:
+        print("NEED_INFO: 请提供收费系统名称")
+        print("提示：可以先使用 list_charge_systems 命令查看可用的收费系统")
+        return
+    if not community_name:
+        print("NEED_INFO: 请提供小区名称")
+        return
+    if not keyword:
+        print("NEED_INFO: 请提供房屋位置关键词（如楼栋/单元/房屋号）")
+        return
+
+    # 获取收费系统映射
+    system_map = get_user_charge_systems(return_map=True)
+    if not system_map:
+        print("获取收费系统列表失败")
+        return
+
+    # 查找收费系统 ID
+    charge_system_id = system_map.get(charge_system_name)
+    if not charge_system_id:
+        print(f"未找到收费系统：{charge_system_name}")
+        print("可用的收费系统：" + ", ".join(system_map.keys()))
+        return
+
+    # 搜索小区
+    community_map = search_community(charge_system_id, community_name, return_map=True)
+    if community_map is None:
+        print("搜索小区失败")
+        return
+    if not community_map:
+        print(f"未找到匹配的小区：{community_name}")
+        return
+    if len(community_map) > 1:
+        # 多个匹配，列出供用户选择
+        print(f"找到多个匹配的小区，请使用完整的小区名称重新查询：")
+        for name in community_map.keys():
+            print(f"  - {name}")
+        return
+
+    # 只有一个匹配，继续处理
+    comm_name, comm_id = next(iter(community_map.items()))
+    print(f"找到小区：{comm_name}")
+
+    # 处理默认日期 - 如果没有提供，默认为全部时间段（从2000-01-01到今天）
+    # 这样包含所有历史账单，适合违约金清零操作
+    if not start_date_str or not end_date_str:
+        today = datetime.now()
+        if not start_date_str:
+            # 默认从 2000-01-01 开始，包含所有历史账单
+            start_dt = datetime(2000, 1, 1)
+            start_date_str = start_dt.strftime('%Y-%m-%d')
+        if not end_date_str:
+            # 到今天结束
+            end_date_str = today.strftime('%Y-%m-%d')
+
+    # 解析日期为时间戳
+    try:
+        start_dt = datetime.strptime(start_date_str, '%Y-%m-%d')
+        end_dt = datetime.strptime(end_date_str, '%Y-%m-%d')
+        # 结束时间设为当天最后一秒
+        end_dt = end_dt.replace(hour=23, minute=59, second=59)
+        start_time = int(start_dt.timestamp())
+        end_time = int(end_dt.timestamp())
+    except ValueError:
+        print(f"日期解析失败，请检查日期格式是否正确，正确格式: YYYY-MM-DD")
+        return
+
+    # 先尝试从缓存加载上一次的匹配列表
+    cache_data = load_match_cache()
+    if cache_data and str(cache_data.get('community_id')) == str(comm_id):
+        cached_nodes = cache_data.get('nodes', [])
+        if cached_nodes:
+            # 尝试解析用户选择
+            selected_node = parse_user_selection(keyword, cached_nodes)
+            if selected_node:
+                logger.info(f"用户选择了: {selected_node.get('name')}")
+                # 清除缓存
+                clear_match_cache()
+                # 检查是否是房屋级别
+                if selected_node['level'] != 'house':
+                    print(f"请选择具体的房屋，当前选择的是{selected_node['name']}（{selected_node['level']}）")
+                    return
+                # 继续处理 - 匹配收费项目
+                if charge_item_name:
+                    charge_item_id = match_charge_item(charge_system_id, comm_id, charge_item_name)
+                    if charge_item_id is None:
+                        # 匹配失败已经输出了信息
+                        return
+                else:
+                    charge_item_id = None
+                # 查询账单
+                clear_late_money_house_bills(
+                    community_id=str(comm_id),
+                    asset_id=str(selected_node['id']),
+                    asset_type=1,
+                    node_name=selected_node['name'],
+                    community_name=comm_name,
+                    start_time=start_time,
+                    end_time=end_time,
+                    charge_item_id=charge_item_id,
+                    set_amount_yuan=set_amount_yuan
+                )
+                return
+            else:
+                # 解析失败，清除缓存，按新关键词重新搜索
+                logger.info("无法解析用户选择，清除缓存并重新搜索")
+                clear_match_cache()
+
+    # 清理关键词
+    clean_keyword = keyword.replace("违约金", "").replace("清零", "").replace("设置", "").replace("的", "").strip()
+
+    # 检查是否使用精确匹配
+    use_exact_match = "/" in clean_keyword
+
+    # 获取完整房屋结构
+    household_data = search_household_structure(str(comm_id), "")
+    if household_data is None:
+        print("搜索房屋结构失败")
+        return
+
+    # 找出匹配的节点
+    if use_exact_match:
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, exact_match=True)
+        if not matching_nodes:
+            logger.info("精确匹配未找到结果，使用模糊匹配")
+            keywords = clean_keyword.split("/")
+            search_kw = keywords[-1] if keywords else clean_keyword
+            household_data_for_search = search_household_structure(str(comm_id), search_kw)
+            if household_data_for_search:
+                household_data = household_data_for_search
+            matching_nodes = find_matching_nodes(household_data, clean_keyword)
+    else:
+        keywords = split_keywords(clean_keyword)
+        search_kw = keywords[-1] if keywords else clean_keyword
+        household_data_for_search = search_household_structure(str(comm_id), search_kw)
+        if household_data_for_search:
+            household_data = household_data_for_search
+        matching_nodes = find_matching_nodes(household_data, clean_keyword)
+
+    if not matching_nodes:
+        # 尝试宽松匹配
+        logger.info(f"严格匹配未找到，尝试宽松匹配: {clean_keyword}")
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, relaxed_match=True)
+    if not matching_nodes:
+        # 仍然没找到，生成候选列表
+        logger.info(f"宽松匹配也未找到，生成候选列表")
+        candidates = generate_candidates(household_data, clean_keyword)
+        if candidates:
+            print_candidates(clean_keyword, candidates)
+        else:
+            print(f"未找到与'{clean_keyword}'匹配的楼栋/单元/房屋，请确认输入是否正确")
+        return
+
+    if len(matching_nodes) == 1:
+        node = matching_nodes[0]
+        if node['level'] != 'house':
+            print(f"请选择具体的房屋，当前选择的是{node['name']}（{node['level']}）")
+            return
+        # 匹配收费项目
+        if charge_item_name:
+            charge_item_id = match_charge_item(charge_system_id, comm_id, charge_item_name)
+            if charge_item_id is None:
+                # 匹配失败已经输出了信息
+                return
+        else:
+            charge_item_id = None
+        # 查询账单
+        clear_late_money_house_bills(
+            community_id=str(comm_id),
+            asset_id=str(node['id']),
+            asset_type=1,
+            node_name=node['name'],
+            community_name=comm_name,
+            start_time=start_time,
+            end_time=end_time,
+            charge_item_id=charge_item_id,
+            set_amount_yuan=set_amount_yuan
+        )
+        return
+    else:
+        save_match_cache(comm_id, matching_nodes)
+        print("MULTI_MATCH:")
+        for idx, node in enumerate(matching_nodes, 1):
+            level_label = {
+                'building': '楼栋',
+                'unit': '单元',
+                'house': '房屋'
+            }.get(node['level'], '未知')
+            print(f"{idx}. {node['name']} ({level_label})")
+        return
+
+
+def confirm_clear_late_money(confirmation_input: str):
+    """
+    确认设置违约金，处理用户选择
+
+    Args:
+        confirmation_input: 用户选择的字符串，yes/no/序号
+    """
+    from datetime import datetime
+    # 从缓存加载待确认数据
+    pending_data = load_late_money_confirmation_cache()
+    if not pending_data:
+        print("没有待确认的设置数据，或数据已过期，请重新开始流程")
+        print("请先运行：python3 main.py clear_late_money <收费系统名称> <小区名称> <房屋关键词> [开始日期] [结束日期] [收费项目] [金额]")
+        return
+
+    # 获取基本信息
+    community_id = pending_data['community_id']
+    asset_id = pending_data['asset_id']
+    community_name = pending_data['community_name']
+    node_name = pending_data['node_name']
+    set_amount_yuan = pending_data['set_amount_yuan']
+    pending_bills = pending_data['pending_bills']
+
+    # 解析用户选择
+    if confirmation_input.lower() == 'no' or confirmation_input.lower() == 'n':
+        print("操作已取消")
+        clear_late_money_confirmation_cache()
+        return
+
+    selected_bills = []
+    if confirmation_input.lower() == 'yes':
+        # 全部选择
+        selected_bills = pending_bills
+    else:
+        # 按序号选择，支持逗号分隔，如 1,2
+        try:
+            # 拆分序号
+            index_strs = confirmation_input.replace('，', ',').split(',')
+            selected_indices = [int(s.strip()) - 1 for s in index_strs if s.strip()]
+            for idx in selected_indices:
+                if 0 <= idx < len(pending_bills):
+                    selected_bills.append(pending_bills[idx])
+        except ValueError:
+            print(f"输入格式错误，请输入 yes/no 或以逗号分隔的序号，如：1,2")
+            return
+
+    if not selected_bills:
+        print(f"未选择任何账单，已取消")
+        clear_late_money_confirmation_cache()
+        return
+
+    # 提取选中的账单ID
+    bill_id_list = [bill['id'] for bill in selected_bills]
+    set_amount_fen = int(round(set_amount_yuan * 100))
+
+    # 调用API执行设置违约金
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        clear_late_money_confirmation_cache()
+        return
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
+
+    # 构建请求负载
+    payload = {
+        "communityID": int(community_id),
+        "billIdList": bill_id_list,
+        "amount": set_amount_fen,
+        "amountType": 2
+    }
+
+    logger.info(f"开始执行设置违约金，社区ID={community_id}, 账单数={len(bill_id_list)}, 设置金额={set_amount_yuan}元")
+
+    try:
+        response = requests.post(
+            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/asyncModDiscountOrLateMoney",
+            json=payload,
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"设置违约金失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            print(f"✗ 设置违约金失败，状态码: {response.status_code}")
+            clear_late_money_confirmation_cache()
+            return
+
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get('code') != 0:
+            logger.error(f"设置违约金失败: {data.get('msg')}")
+            print(f"✗ 设置违约金失败: {data.get('msg')}")
+            clear_late_money_confirmation_cache()
+            return
+
+        # 获取 keyCode 进行轮询
+        key_code = data.get('data', {}).get('keyCode')
+        if not key_code:
+            logger.error(f"未获取到 keyCode，返回数据: {data}")
+            print(f"✗ 设置违约金失败：未获取到任务ID")
+            clear_late_money_confirmation_cache()
+            return
+
+        # 异步轮询获取结果
+        print(f"正在处理，请等待结果...")
+        max_retries = 10
+        retry_interval = 2
+        success = False
+        final_result = None
+
+        for i in range(max_retries):
+            try:
+                import random
+                random_num = random.random()
+                poll_url = f"{CHARGE_API_BASE_URL}/api/v1/GetAsyncResult?keyCode={key_code}&r={random_num}"
+                poll_response = requests.get(poll_url, headers=headers, timeout=10)
+                if poll_response.status_code == 200:
+                    poll_result = poll_response.json()
+                    if poll_result.get('code') == 0:
+                        # 解析 data 里面还有一层 code
+                        data_str = poll_result.get('data', '{}')
+                        try:
+                            if isinstance(data_str, str):
+                                data_result = json.loads(data_str)
+                            else:
+                                data_result = data_str
+                            # 只要能解析出结果，不管成功失败都停止轮询
+                            # 外层 code=0 表示已经拿到最终结果
+                            code = data_result.get('code')
+                            msg = data_result.get('msg', '').lower()
+                            # 如果 msg 是 success，不管 code 是什么都认为成功
+                            success = (code == 0) or (msg == 'success')
+                            final_result = data_result
+                            break
+                        except json.JSONDecodeError:
+                            logger.info(f"轮询 {i+1}/{max_retries}，结果解析错误，继续等待...")
+                    else:
+                        logger.info(f"轮询 {i+1}/{max_retries}，code={poll_result.get('code')}，继续等待...")
+                time.sleep(retry_interval)
+            except Exception as e:
+                logger.warning(f"轮询异常 {i+1}/{max_retries}: {e}")
+                time.sleep(retry_interval)
+
+        if final_result is None:
+            # 真的超时，没拿到结果
+            print(f"✗ 处理超时，请稍后查询结果")
+            logger.error(f"设置违约金轮询超时，keyCode: {key_code}")
+            clear_late_money_confirmation_cache()
+            return
+        if not success:
+            # 拿到了结果，但业务失败
+            msg = final_result.get('msg', '未知错误')
+            print(f"✗ 处理失败：{msg}")
+            logger.error(f"设置违约金业务失败: code={final_result.get('code')}, msg={msg}")
+            clear_late_money_confirmation_cache()
+            return
+
+        logger.info(f"设置违约金成功: {final_result}")
+
+        # 输出成功结果
+        process_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        print(f"\n✓ 设置违约金成功！\n")
+        print(f"**小区**: {community_name}")
+        print(f"**房屋**: {node_name}")
+        print(f"**处理账单数**: {len(selected_bills)} 条")
+        print(f"**设置金额**: ¥ {set_amount_yuan:.2f}")
+        print(f"**处理时间**: {process_time_str}\n")
+
+        print("处理账单明细：")
+        for idx, bill in enumerate(selected_bills, 1):
+            principal_yuan = bill['amount'] / 100
+            original_late_yuan = bill['lateMoney'] / 100
+            date_display = bill['date']
+            try:
+                y, m = date_display.split('-')
+                date_display = f"{y}年{m}月"
+            except:
+                pass
+            if set_amount_yuan == 0:
+                print(f"{idx}. {date_display} {bill['chargeItemName']} - 本金 ¥ {principal_yuan:.2f}, 原违约金 ¥ {original_late_yuan:.2f} → 已清零")
+            else:
+                print(f"{idx}. {date_display} {bill['chargeItemName']} - 本金 ¥ {principal_yuan:.2f}, 原违约金 ¥ {original_late_yuan:.2f} → 已设置为 ¥ {set_amount_yuan / len(selected_bills):.2f}")
+
+        # 清除缓存
+        clear_late_money_confirmation_cache()
+        logger.info(f"设置违约金完成，成功 {len(selected_bills)} 个账单，设置金额 {set_amount_yuan:.2f}")
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"设置违约金发生异常: {e}")
+        print(f"✗ 设置违约金发生异常，请查看日志")
+        clear_late_money_confirmation_cache()
+        return None
+
+
 def generate_web_bill_share_url(community_id: int, asset_id: int, bill_ids: list) -> dict:
     """
     调用 API 生成微信账单分享链接
@@ -8806,6 +9466,115 @@ if __name__ == "__main__":
         else:
             confirmation_input = sys.argv[2]
             confirm_discount(confirmation_input)
+    elif command == "clear_late_money":
+        # 查询待处理账单，准备设置违约金（通常清零）（推荐，智能匹配，两步完成）
+        # 用法: clear_late_money <收费系统名称> <小区名称> <房屋关键词> [开始日期] [结束日期] [收费项目] [设置金额]
+        # 默认设置金额为0（清零），默认时间范围为本月
+        if len(sys.argv) < 5:
+            print("错误：请提供收费系统名称、小区名称和房屋关键词")
+            print("用法: python3 main.py clear_late_money <收费系统名称> <小区名称> <房屋关键词> [开始日期] [结束日期] [收费项目] [设置金额]")
+            print("日期格式: YYYY-MM-DD（省略则默认本月）")
+            print("设置金额省略则默认为 0（清零）")
+            print("示例（清零全部账单违约金，默认本月）: python3 main.py clear_late_money 收费系统 小区 1栋/1单元/101")
+            print("示例（清零物业费违约金，默认本月）: python3 main.py clear_late_money 收费系统 小区 1栋/1单元/101 物业费")
+            print("示例（完整格式，清零指定时间范围物业费）: python3 main.py clear_late_money 收费系统 小区 1栋/1单元/101 2026-03-01 2026-03-31 物业费")
+            print("示例（设置指定金额）: python3 main.py clear_late_money 收费系统 小区 1栋/1单元/101 物业费 10")
+        else:
+            charge_system_name = sys.argv[2]
+            community_name = sys.argv[3]
+            keyword = sys.argv[4]
+
+            # 处理可选参数：开始日期、结束日期、收费项目、设置金额
+            start_date_str = None
+            end_date_str = None
+            charge_item_name = None
+            set_amount_yuan = 0.0  # 默认0表示清零
+
+            def is_date(s: str) -> bool:
+                """简单判断是否是日期格式 YYYY-MM-DD"""
+                return len(s) == 10 and '-' in s
+
+            # len = 5 → clear_late_money cs community keyword
+            # len = 6 → clear_late_money cs community keyword charge_item
+            #             or clear_late_money cs community keyword set_amount
+            # len = 7 → clear_late_money cs community keyword start end
+            #             or clear_late_money cs community keyword charge_item set_amount
+            # len = 8 → clear_late_money cs community keyword start end charge_item
+            # len = 9 → clear_late_money cs community keyword start end charge_item set_amount
+
+            if len(sys.argv) == 5:
+                # 只有三个必选参数，默认全部，清零
+                pass
+            elif len(sys.argv) == 6:
+                # 第5个参数可能是收费项目 或者 金额
+                arg = sys.argv[5]
+                try:
+                    set_amount_yuan = float(arg)
+                    # 用户直接指定了金额，不指定收费项目，默认本月
+                    start_date_str = None
+                    end_date_str = None
+                    charge_item_name = None
+                except ValueError:
+                    # 这是收费项目，默认金额0
+                    charge_item_name = arg
+                    start_date_str = None
+                    end_date_str = None
+            elif len(sys.argv) == 7:
+                arg1 = sys.argv[5]
+                arg2 = sys.argv[6]
+                if is_date(arg1) and is_date(arg2):
+                    # start end，默认金额0
+                    start_date_str = arg1
+                    end_date_str = arg2
+                    charge_item_name = None
+                else:
+                    # charge_item set_amount
+                    try:
+                        charge_item_name = arg1
+                        set_amount_yuan = float(arg2)
+                        start_date_str = None
+                        end_date_str = None
+                    except ValueError:
+                        print("错误：最后一个参数必须是数字（设置金额），请检查参数位置")
+                        exit(1)
+            elif len(sys.argv) == 8:
+                arg1 = sys.argv[5]
+                arg2 = sys.argv[6]
+                if is_date(arg1) and is_date(arg2):
+                    # start end charge_item，默认金额0
+                    start_date_str = arg1
+                    end_date_str = arg2
+                    charge_item_name = sys.argv[7]
+                else:
+                    print("错误：参数解析失败，请检查日期格式是否正确")
+                    exit(1)
+            elif len(sys.argv) >= 9:
+                # 完整参数 start end charge_item set_amount
+                if is_date(sys.argv[5]) and is_date(sys.argv[6]):
+                    start_date_str = sys.argv[5]
+                    end_date_str = sys.argv[6]
+                    charge_item_name = sys.argv[7]
+                    try:
+                        set_amount_yuan = float(sys.argv[8])
+                    except ValueError:
+                        print("错误：最后一个参数必须是数字（设置金额），请检查参数位置")
+                        exit(1)
+                else:
+                    print("错误：参数解析失败，请检查日期格式是否正确")
+                    exit(1)
+
+            clear_late_money_by_name(charge_system_name, community_name, keyword, start_date_str, end_date_str, charge_item_name, set_amount_yuan)
+    elif command == "confirm_clear_late_money":
+        # 确认设置违约金，处理用户选择
+        if len(sys.argv) < 3:
+            print("错误：请提供确认选项（yes/no 或序号）")
+            print("用法: python3 main.py confirm_clear_late_money <yes/no/序号>")
+            print("示例: python3 main.py confirm_clear_late_money yes")
+            print("示例: python3 main.py confirm_clear_late_money 1")
+            print("示例: python3 main.py confirm_clear_late_money 1,2")
+        else:
+            confirmation_input = sys.argv[2]
+            confirm_clear_late_money(confirmation_input)
     elif command == "generate_collection_url":
         # 生成单个房屋催缴链接（推荐，智能匹配，一步完成）
         if len(sys.argv) < 5:
@@ -8896,3 +9665,5 @@ if __name__ == "__main__":
         print("  create_phone_call_log <收费系统名称> <小区名称> <房屋关键词> - 创建电话催缴记录（一步完成）")
         print("  discount_bills <收费系统名称> <小区名称> <房屋关键词> [开始日期] [结束日期] [收费项目] <优惠金额> - 查询待优惠账单（推荐，智能匹配，两步完成）")
         print("  confirm_discount <yes/no/序号> - 确认优惠，处理用户选择")
+        print("  clear_late_money <收费系统名称> <小区名称> <房屋关键词> [开始日期] [结束日期] [收费项目] [设置金额] - 设置违约金（默认清零，推荐，智能匹配，两步完成）")
+        print("  confirm_clear_late_money <yes/no/序号> - 确认设置违约金，处理用户选择")
