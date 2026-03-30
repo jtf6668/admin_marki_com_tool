@@ -4922,6 +4922,45 @@ def clear_revoke_confirmation_cache():
         logger.info("撤回确认缓存已清除")
 
 
+# === 优惠减免确认缓存相关 ===
+def get_discount_confirmation_cache_path():
+    """获取优惠确认缓存文件路径"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(script_dir, '.discount_confirmation_cache.json')
+
+
+def save_discount_confirmation_cache(cache_data):
+    """保存待确认优惠信息到缓存"""
+    cache_path = get_discount_confirmation_cache_path()
+    try:
+        with open(cache_path, 'w', encoding='utf-8') as f:
+            json.dump(cache_data, f, indent=2, ensure_ascii=False)
+        logger.info("优惠确认缓存已保存")
+    except Exception as e:
+        logger.error(f"保存优惠确认缓存失败: {e}")
+
+
+def load_discount_confirmation_cache():
+    """从缓存加载待确认优惠信息"""
+    cache_path = get_discount_confirmation_cache_path()
+    if not os.path.exists(cache_path):
+        return None
+    try:
+        with open(cache_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"读取优惠确认缓存失败: {e}")
+        return None
+
+
+def clear_discount_confirmation_cache():
+    """清除优惠确认缓存"""
+    cache_path = get_discount_confirmation_cache_path()
+    if os.path.exists(cache_path):
+        os.remove(cache_path)
+        logger.info("优惠确认缓存已清除")
+
+
 # === 支付方式映射 ===
 def get_pay_type_by_name(pay_type_name: str) -> int:
     """根据支付方式中文名称获取 payType 编码"""
@@ -6425,6 +6464,554 @@ def confirm_revoke(confirmation_input: str):
     # 清除缓存
     clear_revoke_confirmation_cache()
     logger.info(f"撤回完成，成功 {success_count}/{len(selected_bills)}，总撤回 {total_revoke_amount_yuan:.2f}")
+
+
+def discount_house_bills(community_id: str, asset_id: str, asset_type: int, node_name: str,
+                       community_name: str, start_time: int, end_time: int, charge_item_id: str = None, discount_amount_yuan: float = 0):
+    """
+    查询特定房屋的待优惠账单列表，检查支付状态后保存到缓存等待用户确认
+    """
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
+
+    # 构建查询参数
+    payload = {
+        "communityID": int(community_id),
+        "assetType": asset_type,
+        "assetId": int(asset_id),
+        "payStatus": 0,  # 只查询未支付账单
+        "index": "",
+        "selectChargeItemList": [int(charge_item_id)] if charge_item_id else [],
+        "selectChargeItemAll": charge_item_id is None,
+        "generateStartTime": start_time,
+        "generateEndTime": end_time,
+        "dealLogId": 0,
+        "categoryId": 0,
+        "sortType": 1,
+        "chargeItemVersion": 2,
+        "chargeItemCategorys": []
+    }
+
+    url = f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/getCashierDeskListByIndex"
+
+    try:
+        response = requests.post(
+            url,
+            json=payload,
+            headers=headers,
+            timeout=30
+        )
+    except requests.exceptions.RequestException as e:
+        logger.error(f"查询账单接口调用发生异常: {e}")
+        print(f"查询账单失败：{e}")
+        return None
+
+    if response.status_code != 200:
+        logger.error(f"查询账单失败，状态码: {response.status_code}, 响应: {response.text}")
+        print(f"查询账单失败，HTTP状态码 {response.status_code}")
+        return None
+
+    result = response.json()
+    if result.get('code') != 0:
+        msg = result.get('msg', '未知错误')
+        logger.error(f"查询账单返回错误: code={result.get('code')}, msg={msg}")
+        print(f"查询账单失败：{msg}")
+        return None
+
+    result_data = result.get('data', {})
+    bill_list = []
+    bill_id_list = []
+    total_original_amount = 0
+
+    # 解析账单列表，API 结构：data -> list[] (按日期分组) -> categoryData[] -> records[] (每个账单)
+    date_list = result_data.get('list', [])
+    for date_item in date_list:
+        for category_data in date_item.get('categoryData', []):
+            for record in category_data.get('records', []):
+                # 如果有收费项目筛选，只保留匹配的
+                if charge_item_id and str(record.get('chargeItemId')) != str(charge_item_id):
+                    continue
+                # 只保留未支付账单，字段是 state，0 表示未支付
+                if record.get('state') != 0:
+                    continue
+                bill_info = {
+                    'id': record.get('id'),
+                    'version': record.get('version', 0),
+                    'amount': record.get('billAmount', 0),  # 账单金额，单位分
+                    'chargeItemId': record.get('chargeItemId'),
+                    'chargeItemName': record.get('chargeItemName', '未知项目'),
+                    'date': record.get('date', ''),
+                    'showMonth': record.get('showMonth', ''),
+                    'generateTime': record.get('generateTime', 0)
+                }
+                bill_list.append(bill_info)
+                bill_id_list.append(int(record.get('id')))
+                total_original_amount += record.get('billAmount', 0)
+
+    if not bill_list:
+        print(f"未找到任何未支付账单，请检查时间范围和收费项目")
+        print(f"小区：{community_name}")
+        print(f"房屋：{node_name}")
+        print(f"时间范围：{datetime.fromtimestamp(start_time).strftime('%Y-%m-%d')} 至 {datetime.fromtimestamp(end_time).strftime('%Y-%m-%d')}")
+        return None
+
+    logger.info(f"查询到 {len(bill_list)} 个未支付账单，总金额 {total_original_amount / 100:.2f} 元")
+
+    logger.info(f"未支付账单总金额: {total_original_amount / 100:.2f} 元")
+
+    # 第二步：检查是否有正在支付中的订单
+    print(f"\n正在检查账单支付状态...")
+    check_payload = {
+        "selectList": bill_id_list
+    }
+    check_url = f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/checkInPayBill"
+
+    try:
+        check_response = requests.post(
+            check_url,
+            json=check_payload,
+            headers=headers,
+            timeout=10
+        )
+    except requests.exceptions.RequestException as e:
+        logger.error(f"检查支付状态接口调用发生异常: {e}")
+        print(f"检查支付状态失败：{e}")
+        return None
+
+    if check_response.status_code != 200:
+        logger.error(f"检查支付状态失败，状态码: {check_response.status_code}, 响应: {check_response.text}")
+        print(f"检查支付状态失败，HTTP状态码 {check_response.status_code}")
+        return None
+
+    check_result = check_response.json()
+    if check_result.get('code') != 0:
+        msg = check_result.get('msg', '未知错误')
+        logger.error(f"检查支付状态返回错误: code={check_result.get('code')}, msg={msg}")
+        print(f"检查支付状态失败：{msg}")
+        return None
+
+    check_data = check_result.get('data', {})
+    has_in_pay = check_data.get('hasInPay', False)
+    if has_in_pay:
+        print(f"✗ 检测到有账单正在支付中，请完成支付后再进行优惠操作")
+        logger.warning("存在支付中订单，终止优惠操作")
+        return None
+
+    logger.info("支付状态检查通过，没有正在支付中的订单")
+
+    # 转换优惠金额为分
+    discount_amount_fen = int(round(discount_amount_yuan * 100))
+
+    # 保存到缓存等待用户确认
+    cache_data = {
+        'community_id': community_id,
+        'community_name': community_name,
+        'asset_id': asset_id,
+        'asset_type': asset_type,
+        'node_name': node_name,
+        'start_time': start_time,
+        'end_time': end_time,
+        'charge_item_id': charge_item_id,
+        'discount_amount_yuan': discount_amount_yuan,
+        'discount_amount_fen': discount_amount_fen,
+        'bill_list': bill_list,
+        'total_original_amount': total_original_amount
+    }
+    save_discount_confirmation_cache(cache_data)
+
+    # 输出给用户
+    total_original_amount_yuan = total_original_amount / 100
+    print(f"\n### 待优惠账单信息\n")
+    print(f"**小区**: {community_name}")
+    print(f"**房屋**: {node_name}")
+    print(f"**时间范围**: {datetime.fromtimestamp(start_time).strftime('%Y-%m-%d')} 至 {datetime.fromtimestamp(end_time).strftime('%Y-%m-%d')}")
+    print(f"**优惠总金额**: ¥ {discount_amount_yuan:.2f}")
+    print(f"**待优惠账单数**: {len(bill_list)} 条")
+    print(f"**账单总金额**: ¥ {total_original_amount_yuan:.2f}\n")
+    print("账单列表:")
+    for idx, bill in enumerate(bill_list, 1):
+        amount_yuan = bill['amount'] / 100
+        date_str = f"{bill['date']} " if bill['date'] else ""
+        # 转换日期格式如 2026-03 -> 2026年03月
+        try:
+            y, m = date_str.strip().split('-')
+            date_str = f"{y}年{m}月 "
+        except:
+            pass
+        print(f"{idx}. {date_str}{bill['chargeItemName']} - ¥ {amount_yuan:.2f}")
+    print()
+    print("请确认是否进行优惠减免？")
+    print("- 运行命令 `confirm_discount yes` 优惠全部账单")
+    print("- 运行命令 `confirm_discount <序号>`（如`confirm_discount 1`或`confirm_discount 1,2`）只优惠指定账单")
+    print("- 运行命令 `confirm_discount no` 取消")
+
+    return cache_data
+
+
+def discount_bills_by_name(charge_system_name=None, community_name=None, keyword=None,
+                          start_date_str=None, end_date_str=None, charge_item_name=None, discount_amount_yuan=None):
+    """
+    通过名称对特定房屋指定时间范围的账单进行优惠减免（智能匹配模式）
+    """
+    # 1. 获取收费系统
+    system_map = get_user_charge_systems(return_map=True)
+    if not system_map:
+        print("获取收费系统列表失败")
+        return
+    if charge_system_name not in system_map:
+        print(f"未找到收费系统：{charge_system_name}")
+        print("可用的收费系统：" + ", ".join(system_map.keys()))
+        return
+    charge_system_id = system_map[charge_system_name]
+    print(f"找到收费系统：{charge_system_name}")
+
+    # 2. 搜索小区
+    community_map = search_community(charge_system_id, community_name, return_map=True)
+    if not community_map:
+        print(f"未找到匹配的小区：{community_name}")
+        return
+    if len(community_map) > 1:
+        print(f"找到多个匹配的小区，请选择：")
+        for name in community_map.keys():
+            print(f"  - {name}")
+        return
+    # 只有一个匹配，直接使用
+    community_name_found = list(community_map.keys())[0]
+    community_id = community_map[community_name_found]
+    print(f"找到小区：{community_name_found}")
+
+    # 3. 解析日期范围，如果没有提供则默认当月
+    today = datetime.now()
+    if discount_amount_yuan is None:
+        # 参数位置调整：当 start_date_str 是数字（优惠金额），说明没有提供日期范围，默认本月
+        # 格式: discount_bills 系统 小区 房屋 优惠金额 或者 discount_bills 系统 小区 房屋 收费项目 优惠金额
+        try:
+            discount_amount_yuan = float(start_date_str)
+            # 没有提供日期，使用本月
+            start_time = datetime(today.year, today.month, 1)
+            end_time = today
+            start_date_str = None
+            end_date_str = None
+            logger.info(f"未提供日期范围，使用本月: {start_time.strftime('%Y-%m-%d')} 至 {end_time.strftime('%Y-%m-%d')}")
+        except ValueError:
+            print(f"参数解析失败，请检查命令格式。示例：discount_bills 收费系统 小区 1栋/1单元/101 物业费 50")
+            return
+    elif charge_item_name is None and end_date_str is not None:
+        # 格式: discount_bills 系统 小区 房屋 开始日期 结束日期 优惠金额，不指定收费项目
+        try:
+            discount_amount_yuan = float(end_date_str)
+            charge_item_name = None
+            logger.info(f"不指定收费项目，对所有未付账单优惠 {discount_amount_yuan} 元")
+        except ValueError:
+            print(f"优惠金额必须是数字，请检查：{end_date_str}")
+            return
+    elif charge_item_name is not None:
+        # 格式: discount_bills 系统 小区 房屋 开始日期 结束日期 收费项目 优惠金额
+        try:
+            discount_amount_yuan = float(discount_amount_yuan)
+        except ValueError:
+            print(f"优惠金额必须是数字，请检查：{discount_amount_yuan}")
+            return
+
+    if 'start_time' not in locals():
+        # 解析用户提供的日期范围
+        if not start_date_str or not end_date_str:
+            # 使用本月
+            start_time = datetime(today.year, today.month, 1)
+            end_time = today
+        else:
+            try:
+                start_time = datetime.strptime(start_date_str, '%Y-%m-%d')
+                end_time = datetime.strptime(end_date_str, '%Y-%m-%d')
+            except ValueError:
+                print(f"日期格式错误，请使用 YYYY-MM-DD 格式，如 2026-03-01")
+                return
+
+    start_timestamp = int(start_time.timestamp())
+    end_timestamp = int(end_time.timestamp()) + 86399  # 包含结束日期当天
+
+    # 4. 匹配收费项目
+    charge_item_id = None
+    if charge_item_name:
+        print(f"正在匹配收费项目：{charge_item_name}...")
+        charge_item_id = get_charge_item_id_by_name(str(community_id), str(charge_system_id), charge_item_name)
+        logger.info(f"收费项目筛选: {charge_item_name} → ID: {charge_item_id}")
+
+    # 4.5 加载匹配缓存（处理用户选择多个匹配的场景）
+    cache_data = load_match_cache()
+    selected_node = None
+
+    # 检查缓存中是否有可用的匹配结果（用户选择场景）
+    if cache_data and str(cache_data.get('community_id')) == str(community_id):
+        cached_nodes = cache_data.get('nodes', [])
+        if cached_nodes:
+            # 尝试解析用户选择
+            selected_node = parse_user_selection(keyword, cached_nodes)
+            if selected_node:
+                logger.info(f"用户选择了: {selected_node.get('full_name')}")
+                # 清除缓存
+                clear_match_cache()
+                # 检查是否是房屋级别
+                if selected_node['level'] != 'house':
+                    print(f"请选择具体的房屋进行优惠，当前选择的是{selected_node['full_name']}（{selected_node['level']}）")
+                    return
+                # 继续处理
+                node_id = str(selected_node['id'])
+                node_name = selected_node['full_name']
+                asset_type = 1  # 房屋固定为1
+
+                logger.info(f"已选择房屋: {node_name}, ID: {node_id}")
+
+                # 查询账单
+                discount_house_bills(str(community_id), node_id, asset_type, node_name, community_name_found, start_timestamp, end_timestamp, charge_item_id, discount_amount_yuan)
+                return
+            else:
+                # 解析失败，清除缓存，按新关键词重新搜索
+                logger.info("无法解析用户选择，清除缓存并重新搜索")
+                clear_match_cache()
+
+    # 5. 搜索房屋
+    # 清理关键词
+    clean_keyword = keyword.replace("优惠", "").replace("减免", "").replace("账单", "").replace("的", "").strip()
+
+    # 检查是否使用精确匹配（包含 / 分隔符）
+    use_exact_match = "/" in clean_keyword
+
+    # 获取完整房屋结构
+    household_data = search_household_structure(str(community_id), "")
+    if household_data is None:
+        print("搜索房屋结构失败")
+        return
+
+    # 找出匹配的节点
+    if use_exact_match:
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, exact_match=True)
+        if not matching_nodes:
+            logger.info("精确匹配未找到结果，使用模糊匹配")
+            keywords = clean_keyword.split("/")
+            search_kw = keywords[-1] if keywords else clean_keyword
+            household_data_for_search = search_household_structure(str(community_id), search_kw)
+            matching_nodes = find_matching_nodes(household_data_for_search, clean_keyword, exact_match=False, relaxed_match=True)
+    else:
+        # 模糊匹配
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, exact_match=False, relaxed_match=True)
+
+    if not matching_nodes:
+        # 宽松匹配也没找到，尝试宽松匹配整个关键词
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, exact_match=False, relaxed_match=True)
+        if not matching_nodes:
+            print("未找到任何匹配的房屋，请检查关键词重试")
+            return
+
+    if len(matching_nodes) == 1:
+        # 只有一个匹配，直接使用
+        selected_node = matching_nodes[0]
+        if selected_node['level'] != 'house':
+            print(f"匹配结果不是房屋，当前匹配到的是 {selected_node['level']}：{selected_node['full_name']}")
+            print("请提供更精确的关键词匹配到具体房屋")
+            return
+
+        clear_match_cache()
+        node_id = str(selected_node['id'])
+        node_name = selected_node['full_name']
+        asset_type = 1  # 房屋固定为1
+        logger.info(f"已选择房屋: {node_name}, ID: {node_id}")
+
+        # 查询账单
+        discount_house_bills(str(community_id), node_id, asset_type, node_name, community_name_found, start_timestamp, end_timestamp, charge_item_id, discount_amount_yuan)
+    else:
+        # 多个匹配，保存到缓存让用户选择
+        save_match_cache(community_id, matching_nodes)
+        print(f"找到多个匹配，请选择：")
+        for idx, node in enumerate(matching_nodes, 1):
+            print(f"{idx}. {node['full_name']} ({node['level']})")
+        return
+
+
+def confirm_discount(confirmation_input: str):
+    """
+    处理用户确认，执行优惠减免
+    """
+    # 加载缓存
+    cache_data = load_discount_confirmation_cache()
+    if not cache_data:
+        print("没有待确认的优惠，请先运行 discount_bills 查询账单")
+        return
+
+    if confirmation_input.lower() == 'no':
+        print("已取消优惠")
+        clear_discount_confirmation_cache()
+        return
+
+    community_id = cache_data['community_id']
+    community_name = cache_data['community_name']
+    node_name = cache_data['node_name']
+    discount_amount_yuan = cache_data['discount_amount_yuan']
+    discount_amount_fen = cache_data['discount_amount_fen']
+    all_bills = cache_data['bill_list']
+
+    # 解析用户选择
+    selected_bills = []
+    if confirmation_input.lower() == 'yes':
+        # 全部选择
+        selected_bills = all_bills
+    else:
+        # 按序号选择，支持逗号分隔，如 1,2
+        try:
+            # 拆分序号
+            index_strs = confirmation_input.replace('，', ',').split(',')
+            selected_indices = [int(s.strip()) - 1 for s in index_strs if s.strip()]
+            for idx in selected_indices:
+                if 0 <= idx < len(all_bills):
+                    selected_bills.append(all_bills[idx])
+        except ValueError:
+            print(f"输入格式错误，请输入 yes/no 或以逗号分隔的序号，如：1,2")
+            return
+
+    if not selected_bills:
+        print(f"未选择任何账单，已取消")
+        clear_discount_confirmation_cache()
+        return
+
+    logger.info(f"用户选择了 {len(selected_bills)} 个账单进行优惠")
+
+    # 准备调用接口
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
+
+    # 收集账单ID列表
+    bill_id_list = [int(bill['id']) for bill in selected_bills]
+
+    # 构建请求
+    payload = {
+        "communityID": int(community_id),
+        "billIdList": bill_id_list,
+        "discountType": 1,  # 1 = 金额减免
+        "discountRate": 0,  # 金额减免固定为0
+        "amount": discount_amount_fen,  # 优惠金额，单位分
+        "amountType": 1  # 1 = 按金额减免
+    }
+
+    url = f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/modDiscountOrLateMoney"
+
+    try:
+        response = requests.post(
+            url,
+            json=payload,
+            headers=headers,
+            timeout=30
+        )
+    except requests.exceptions.RequestException as e:
+        logger.error(f"优惠接口调用发生异常: {e}")
+        print(f"优惠失败：{e}")
+        return
+
+    if response.status_code != 200:
+        logger.error(f"优惠失败，状态码: {response.status_code}, 响应: {response.text}")
+        print(f"优惠失败，HTTP状态码 {response.status_code}")
+        return
+
+    result = response.json()
+    if result.get('code') != 0:
+        msg = result.get('msg', '未知错误')
+        logger.error(f"优惠返回错误: code={result.get('code')}, msg={msg}")
+        print(f"优惠失败：{msg}")
+        clear_discount_confirmation_cache()
+        return
+
+    # 获取异步 keyCode 进行轮询
+    key_code = result.get('data', {}).get('keyCode')
+    if not key_code:
+        logger.error(f"未获取到异步任务 keyCode，响应: {result}")
+        print(f"优惠失败：未获取到异步任务标识")
+        clear_discount_confirmation_cache()
+        return
+
+    logger.info(f"优惠任务已提交，keyCode: {key_code}，开始轮询结果...")
+    print(f"\n优惠任务已提交，正在处理，请等待结果...\n")
+
+    # 轮询异步结果
+    max_retries = 10
+    retry_interval = 2
+    success = False
+    final_result = None
+
+    for i in range(max_retries):
+        try:
+            import random
+            random_num = random.random()
+            poll_url = f"{CHARGE_API_BASE_URL}/api/v1/GetAsyncResult?keyCode={key_code}&r={random_num}"
+            poll_response = requests.get(poll_url, headers=headers, timeout=10)
+            if poll_response.status_code == 200:
+                poll_result = poll_response.json()
+                if poll_result.get('code') == 0:
+                    # 解析 data 里面还有一层 code
+                    data_str = poll_result.get('data', '{}')
+                    try:
+                        if isinstance(data_str, str):
+                            data_result = json.loads(data_str)
+                        else:
+                            data_result = data_str
+                        # 只要能解析出结果，不管成功失败都停止轮询
+                        # 外层 code=0 表示已经拿到最终结果
+                        success = (data_result.get('code') == 0)
+                        final_result = data_result
+                        break
+                    except json.JSONDecodeError:
+                        logger.info(f"轮询 {i+1}/{max_retries}，结果解析错误，继续等待...")
+                else:
+                    logger.info(f"轮询 {i+1}/{max_retries}，code={poll_result.get('code')}，继续等待...")
+            time.sleep(retry_interval)
+        except Exception as e:
+            logger.warning(f"轮询异常 {i+1}/{max_retries}: {e}")
+            time.sleep(retry_interval)
+
+    if final_result is None:
+        # 真的超时，没拿到结果
+        print(f"✗ 优惠处理超时，请稍后查询结果")
+        logger.error(f"优惠轮询超时，keyCode: {key_code}")
+        clear_discount_confirmation_cache()
+        return
+    if not success:
+        # 拿到了结果，但业务失败
+        msg = final_result.get('msg', '未知错误')
+        print(f"✗ 优惠处理失败：{msg}")
+        logger.error(f"优惠业务失败: code={final_result.get('code')}, msg={msg}")
+        clear_discount_confirmation_cache()
+        return
+
+    logger.info(f"优惠处理成功: {final_result}")
+
+    # 输出成功结果
+    process_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    print(f"\n✓ 优惠减免成功！\n")
+    print(f"**小区**: {community_name}")
+    print(f"**房屋**: {node_name}")
+    print(f"**优惠账单数**: {len(selected_bills)} 条")
+    print(f"**优惠总金额**: ¥ {discount_amount_yuan:.2f}")
+    print(f"**处理时间**: {process_time_str}\n")
+
+    print("优惠账单明细：")
+    for idx, bill in enumerate(selected_bills, 1):
+        amount_yuan = bill['amount'] / 100
+        date_display = bill['date']
+        try:
+            y, m = date_display.split('-')
+            date_display = f"{y}年{m}月"
+        except:
+            pass
+        print(f"{idx}. {date_display} {bill['chargeItemName']} - 原金额 ¥ {amount_yuan:.2f} - 优惠 ¥ {discount_amount_yuan / len(selected_bills):.2f}")
+
+    # 清除缓存
+    clear_discount_confirmation_cache()
+    logger.info(f"优惠完成，成功 {len(selected_bills)} 个账单，总优惠 {discount_amount_yuan:.2f}")
 
 
 def generate_web_bill_share_url(community_id: int, asset_id: int, bill_ids: list) -> dict:
@@ -8122,6 +8709,103 @@ if __name__ == "__main__":
         else:
             confirmation_input = sys.argv[2]
             confirm_revoke(confirmation_input)
+    elif command == "discount_bills":
+        # 查询待优惠账单（推荐，智能匹配，两步完成）
+        if len(sys.argv) < 6:
+            print("错误：请提供收费系统名称、小区名称、房屋关键词和优惠金额")
+            print("用法: python3 main.py discount_bills <收费系统名称> <小区名称> <房屋关键词> [开始日期] [结束日期] [收费项目] <优惠金额>")
+            print("日期格式: YYYY-MM-DD（省略则默认本月）")
+            print("示例（完整格式）: python3 main.py discount_bills 收费系统 小区 1栋/1单元/101 2026-03-01 2026-03-31 物业费 50")
+            print("示例（默认本月）: python3 main.py discount_bills 收费系统 小区 1栋/1单元/101 物业费 50")
+            print("示例（不指定收费项目）: python3 main.py discount_bills 收费系统 小区 1栋/1单元/101 50")
+        else:
+            charge_system_name = sys.argv[2]
+            community_name = sys.argv[3]
+            keyword = sys.argv[4]
+
+            # 处理可选参数：开始日期、结束日期、收费项目、优惠金额
+            start_date_str = None
+            end_date_str = None
+            charge_item_name = None
+            discount_amount_yuan = None
+
+            def is_date(s: str) -> bool:
+                """简单判断是否是日期格式 YYYY-MM-DD"""
+                return len(s) == 10 and '-' in s
+
+            # 参数位置分析：
+            # len = 5 → discount_bills cs community keyword discount_amount
+            # len = 6 → discount_bills cs community keyword charge_item discount_amount
+            # len = 7 → discount_bills cs community keyword start end discount_amount
+            # len = 8 → discount_bills cs community keyword start end charge_item discount_amount
+
+            if len(sys.argv) == 5:
+                # 最少参数，理论上不会到这里，因为 len < 6 已经拦截了
+                pass
+            elif len(sys.argv) == 6:
+                # 第5个参数可能是优惠金额（不指定收费项目，默认本月），也可能是收费项目
+                arg = sys.argv[5]
+                try:
+                    discount_amount_yuan = float(arg)
+                    # 不指定收费项目，默认本月
+                    start_date_str = None
+                    end_date_str = None
+                    charge_item_name = None
+                except ValueError:
+                    # 这是收费项目，需要用户继续？不可能，因为优惠金额必须有
+                    print("错误：必须提供优惠金额（最后一个参数）")
+                    print("示例: python3 main.py discount_bills 收费系统 小区 1栋/1单元/101 物业费 50")
+                    exit(1)
+            elif len(sys.argv) == 7:
+                arg1 = sys.argv[5]
+                arg2 = sys.argv[6]
+                if is_date(arg1) and is_date(arg2):
+                    # start end discount_amount
+                    try:
+                        start_date_str = arg1
+                        end_date_str = arg2
+                        discount_amount_yuan = float(arg2)
+                        charge_item_name = None
+                    except ValueError:
+                        print("错误：优惠金额必须是数字，请检查参数位置")
+                        exit(1)
+                else:
+                    # charge_item discount_amount
+                    try:
+                        charge_item_name = arg1
+                        discount_amount_yuan = float(arg2)
+                        start_date_str = None
+                        end_date_str = None
+                    except ValueError:
+                        print("错误：优惠金额必须是数字，请检查参数位置")
+                        exit(1)
+            elif len(sys.argv) >= 8:
+                # 完整参数 start end charge_item discount_amount
+                if is_date(sys.argv[5]) and is_date(sys.argv[6]):
+                    start_date_str = sys.argv[5]
+                    end_date_str = sys.argv[6]
+                    charge_item_name = sys.argv[7] if len(sys.argv) > 7 else None
+                    try:
+                        discount_amount_yuan = float(sys.argv[8]) if len(sys.argv) > 8 else float(sys.argv[7])
+                    except ValueError:
+                        print("错误：优惠金额必须是数字，请检查参数位置")
+                        exit(1)
+                else:
+                    print("错误：参数解析失败，请检查日期格式是否正确")
+                    exit(1)
+
+            discount_bills_by_name(charge_system_name, community_name, keyword, start_date_str, end_date_str, charge_item_name, discount_amount_yuan)
+    elif command == "confirm_discount":
+        # 确认优惠，处理用户选择
+        if len(sys.argv) < 3:
+            print("错误：请提供确认选项（yes/no 或序号）")
+            print("用法: python3 main.py confirm_discount <yes/no/序号>")
+            print("示例: python3 main.py confirm_discount yes")
+            print("示例: python3 main.py confirm_discount 1")
+            print("示例: python3 main.py confirm_discount 1,2")
+        else:
+            confirmation_input = sys.argv[2]
+            confirm_discount(confirmation_input)
     elif command == "generate_collection_url":
         # 生成单个房屋催缴链接（推荐，智能匹配，一步完成）
         if len(sys.argv) < 5:
@@ -8210,3 +8894,5 @@ if __name__ == "__main__":
         print("  generate_charge_work_order <收费系统名称> <小区名称> <房屋关键词> - 生成催缴工单（推荐，智能匹配，两步完成）")
         print("  confirm_charge_work_order <序号> - 确认选择代办人，生成催缴工单")
         print("  create_phone_call_log <收费系统名称> <小区名称> <房屋关键词> - 创建电话催缴记录（一步完成）")
+        print("  discount_bills <收费系统名称> <小区名称> <房屋关键词> [开始日期] [结束日期] [收费项目] <优惠金额> - 查询待优惠账单（推荐，智能匹配，两步完成）")
+        print("  confirm_discount <yes/no/序号> - 确认优惠，处理用户选择")
