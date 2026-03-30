@@ -28,10 +28,15 @@
   - 自动检查是否有支付中订单（支付中不能操作）
   - 支持用户选择部分账单进行处理
 
+- **收取押金（装修押金、水电押金等）** ✅ 已实现
+  - 支持对指定房屋收取各种类型的押金
+  - 智能匹配已有押金项目，未找到时自动创建新项目
+  - 支持现金、微信、支付宝多种支付方式
+  - 两步确认模式，遵循统一交互规范
+
 ## 规划中的功能
 
 - 预存款充值
-  - 收取装修押金
 - 生成缴费收据
 
 ---
@@ -50,6 +55,8 @@
 | `confirm_discount` | 确认优惠，处理用户选择 | `yes/no/序号` |
 | `clear_late_money` | 查询待处理账单，设置违约金（默认清零，推荐，智能匹配，两步完成） | `收费系统名称 小区名称 房屋关键词 [开始日期 结束日期] [收费项目] [设置金额]` |
 | `confirm_clear_late_money` | 确认设置违约金，处理用户选择 | `yes/no/序号` |
+| `collect_cash_pledge` | 收取押金（装修押金、水电押金等，推荐，智能匹配，两步完成） | `收费系统名称 小区名称 房屋关键词 押金名称 金额 [支付方式]` |
+| `confirm_collect_cash_pledge` | 确认收取押金，处理用户选择 | `yes/no` |
 
 ---
 
@@ -847,4 +854,186 @@ python3 main.py clear_late_money "收费系统" "XXX花园" "1栋/1单元/101" "
 
 # 确认设置
 python3 main.py confirm_clear_late_money yes
+```
+
+---
+
+## 处理流程 - 收取押金
+
+### 第一步：查询匹配押金项目
+```bash
+python3 main.py collect_cash_pledge <收费系统名称> <小区名称> <房屋关键词> <押金名称> <金额> [支付方式]
+```
+
+系统会：
+1. 匹配收费系统
+2. 匹配小区
+3. 匹配房屋（支持精确路径匹配如`1栋/1单元/101`，也支持模糊搜索）
+4. 查询该小区已有押金项目列表
+5. 智能匹配押金项目（精确优先，模糊次之）
+6. 未找到匹配则提示需要创建新项目
+7. 输出待确认信息供用户确认
+
+**示例输出（已有押金项目）：**
+```
+找到收费系统：XXX收费系统
+找到小区：XXX花园
+已选择房屋：1栋/1单元/101
+
+### 待收取押金信息
+
+**小区**: XXX花园
+**房屋**: 1栋/1单元/101
+**押金项目**: 装修押金
+**押金金额**: ¥ 1000.00
+**支付方式**: 现金
+
+请确认是否收取押金？
+- 运行命令 `confirm_collect_cash_pledge yes` 确认收取
+- 运行命令 `confirm_collect_cash_pledge no` 取消
+```
+
+**示例输出（需要创建新项目）：**
+```
+找到收费系统：XXX收费系统
+找到小区：XXX花园
+已选择房屋：1栋/1单元/101
+
+### 待收取押金信息
+
+**小区**: XXX花园
+**房屋**: 1栋/1单元/101
+**押金项目**: 临时押金
+**押金金额**: ¥ 500.00
+**支付方式**: 微信
+
+⚠ 未找到押金项目 '临时押金'，需要创建新项目。
+
+请确认是否收取押金？
+- 运行命令 `confirm_collect_cash_pledge yes` 确认创建并收取
+- 运行命令 `confirm_collect_cash_pledge no` 取消
+```
+
+---
+
+### 第二步：用户确认收取
+根据你的选择运行对应的确认命令：
+
+**确认收取：**
+```bash
+python3 main.py confirm_collect_cash_pledge yes
+```
+
+**取消：**
+```bash
+python3 main.py confirm_collect_cash_pledge no
+```
+
+---
+
+### 第三步：收取结果
+
+**收取成功示例输出：**
+```
+✓ 收取押金成功！
+
+**小区**: XXX花园
+**房屋**: 1栋/1单元/101
+**押金项目**: 装修押金
+**押金金额**: ¥ 1000.00
+**支付方式**: 现金
+**收取时间**: 2026-03-30 16:30:00
+```
+
+**收取失败会输出错误信息，详情可查看日志。**
+
+---
+
+## API 说明 - 收取押金
+
+### 查询押金项目接口
+- **端点**: `{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/queryCashPledgeItem`
+- **方法**: POST
+- **Payload 格式**:
+```json
+{
+  "communityID": 10587,
+  "pageIndex": 1,
+  "pageSize": 100
+}
+```
+- **字段说明**:
+  - `communityID`: 小区ID
+  - `pageIndex`: 页码
+  - `pageSize`: 每页数量
+
+### 创建押金项目接口
+- **端点**: `{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/addCashPledgeItem`
+- **方法**: POST
+- **Payload 格式**:
+```json
+{
+  "communityID": 10587,
+  "pledgeName": "装修押金",
+  "amount": 100000
+}
+```
+- **字段说明**:
+  - `communityID`: 小区ID
+  - `pledgeName`: 押金项目名称
+  - `amount`: 押金金额，单位：分（1000元 = 100000）
+
+### 收取押金接口
+- **端点**: `{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/addCashPledgeOrder`
+- **方法**: POST
+- **Payload 格式**:
+```json
+{
+  "communityID": 10587,
+  "assetType": 1,
+  "assetId": 310932,
+  "pledgeItemId": 481,
+  "amount": 100000,
+  "payType": 2,
+  "payTime": 1774859865
+}
+```
+- **字段说明**:
+  - `communityID`: 小区ID
+  - `assetType`: 资产类型（1 = 房屋）
+  - `assetId`: 房屋ID
+  - `pledgeItemId`: 押金项目ID
+  - `amount`: 押金金额，单位：分
+  - `payType`: 支付方式（1 = 微信，2 = 现金，3 = 支付宝）
+  - `payTime`: 支付时间戳
+
+---
+
+## 使用示例 - 收取押金
+
+完整流程示例（已有押金项目）：
+```bash
+# 对1栋/1单元/101收取1000元装修押金，现金支付
+python3 main.py collect_cash_pledge "收费系统" "XXX花园" "1栋/1单元/101" "装修押金" 1000
+
+# 确认收取
+python3 main.py confirm_collect_cash_pledge yes
+```
+
+完整流程示例（创建新项目并收取）：
+```bash
+# 对1栋/1单元/101收取500元临时押金，微信支付
+python3 main.py collect_cash_pledge "收费系统" "XXX花园" "1栋/1单元/101" "临时押金" 500 微信
+
+# 确认创建并收取
+python3 main.py confirm_collect_cash_pledge yes
+```
+
+取消操作示例：
+```bash
+# 第一步查询匹配
+python3 main.py collect_cash_pledge "收费系统" "XXX花园" "1栋/1单元/101" "装修押金" 1000
+
+# 取消操作
+python3 main.py confirm_collect_cash_pledge no
 ```

@@ -7674,6 +7674,577 @@ def confirm_clear_late_money(confirmation_input: str):
         return None
 
 
+# === 收取押金确认缓存相关函数 ===
+def get_cash_pledge_confirmation_cache_path() -> str:
+    """获取收取押金确认缓存文件路径"""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_dir, '.cash_pledge_confirmation_cache.json')
+
+
+def save_cash_pledge_confirmation_cache(cache_data: dict) -> None:
+    """保存收取押金确认数据到缓存"""
+    cache_data_with_ts = {
+        "timestamp": time.time(),
+        **cache_data
+    }
+    try:
+        with open(get_cash_pledge_confirmation_cache_path(), 'w', encoding='utf-8') as f:
+            json.dump(cache_data_with_ts, f, ensure_ascii=False, indent=2)
+        logger.info(f"已保存收取押金确认数据")
+    except Exception as e:
+        logger.warning(f"保存收取押金确认缓存失败: {e}")
+
+
+def load_cash_pledge_confirmation_cache() -> Optional[dict]:
+    """从缓存加载收取押金确认数据（5分钟内有效）
+
+    Returns:
+        dict: 确认数据或 None
+    """
+    cache_path = get_cash_pledge_confirmation_cache_path()
+    if not os.path.exists(cache_path):
+        return None
+
+    try:
+        with open(cache_path, 'r', encoding='utf-8') as f:
+            cache_data = json.load(f)
+
+        # 检查是否过期（5分钟）
+        if time.time() - cache_data.get('timestamp', 0) > 300:
+            logger.info("收取押金确认缓存已过期")
+            clear_cash_pledge_confirmation_cache()
+            return None
+
+        logger.info(f"从缓存加载了收取押金确认数据")
+        return cache_data
+    except Exception as e:
+        logger.warning(f"加载收取押金确认缓存失败: {e}")
+        return None
+
+
+def clear_cash_pledge_confirmation_cache() -> None:
+    """清除收取押金确认缓存"""
+    cache_path = get_cash_pledge_confirmation_cache_path()
+    if os.path.exists(cache_path):
+        try:
+            os.remove(cache_path)
+            logger.info("已清除收取押金确认缓存")
+        except Exception as e:
+            logger.warning(f"清除收取押金确认缓存失败: {e}")
+
+
+def query_cash_pledge_items(community_id: str) -> Optional[list[dict]]:
+    """查询小区已有押金项目列表
+
+    Args:
+        community_id: 小区ID
+
+    Returns:
+        list[dict]: 押金项目列表，None 表示查询失败
+    """
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
+    payload = {
+        "cashPledgeName": "",
+        "page": 1,
+        "size": 100,
+        "communityId": int(community_id)
+    }
+
+    try:
+        response = requests.post(
+            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/queryCashPledgeItem",
+            json=payload,
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"查询押金项目失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            return None
+
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get('code') != 0:
+            logger.error(f"查询押金项目失败: {data.get('msg')}")
+            return None
+
+        # Get the correct list from response
+        data_obj = data.get('data', {})
+        items = data_obj.get('cashPledgeItemList', [])
+        logger.info(f"查询到小区 {community_id} 共有 {len(items)} 个押金项目")
+        return items
+    except requests.exceptions.RequestException as e:
+        logger.error(f"查询押金项目发生异常: {e}")
+        return None
+
+
+def match_cash_pledge_item(community_id: str, input_name: str) -> Optional[dict]:
+    """智能匹配押金项目
+
+    Matching rules:
+    1. Exact match first (name exactly equals input)
+    2. Fuzzy match (input name is contained in item name)
+    3. Multiple matches: score by length preference (shorter better match)
+    4. No match: return None
+
+    Args:
+        community_id: 小区ID
+        input_name: 用户输入的押金名称
+
+    Returns:
+        dict: matched item, None if no match
+    """
+    items = query_cash_pledge_items(community_id)
+    if items is None:
+        return None
+    if not items:
+        return None
+
+    input_lower = input_name.lower()
+
+    # 1. 精确匹配
+    exact_matches = [item for item in items if item.get('cashPledgeName', '').lower() == input_lower]
+    if len(exact_matches) == 1:
+        logger.info(f"找到精确匹配押金项目: {exact_matches[0]}")
+        return exact_matches[0]
+
+    # 2. 模糊匹配（包含关键词）
+    fuzzy_matches = [item for item in items if input_lower in item.get('cashPledgeName', '').lower()]
+    if not fuzzy_matches:
+        logger.info(f"未找到匹配的押金项目: {input_name}")
+        return None
+
+    # 3. 多个模糊匹配，按名称长度排序（越短越好，因为包含关键词更精准）
+    fuzzy_matches.sort(key=lambda x: len(x.get('cashPledgeName', '')))
+    best_match = fuzzy_matches[0]
+    logger.info(f"模糊匹配找到最佳押金项目: {best_match}, 共 {len(fuzzy_matches)} 个候选")
+    return best_match
+
+
+def create_cash_pledge_item(community_id: str, pledge_name: str, amount_fen: int) -> Optional[str]:
+    """创建新的押金项目
+
+    Args:
+        community_id: 小区ID
+        pledge_name: 押金项目名称
+        amount_fen: 默认金额（单位：分）
+
+    Returns:
+        str: 新创建的押金项目ID，None 表示创建失败
+    """
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
+    payload = {
+        "cashPledgeName": pledge_name,
+        "amount": amount_fen,
+        "communityId": int(community_id)
+    }
+
+    try:
+        response = requests.post(
+            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/addCashPledgeItem",
+            json=payload,
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"创建押金项目失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            return None
+
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get('code') != 0:
+            logger.error(f"创建押金项目失败: {data.get('msg')}")
+            print(f"✗ 创建押金项目失败: {data.get('msg')}")
+            return None
+
+        data_obj = data.get('data')
+        if data_obj is None:
+            # 根据用户提供的API示例，成功时data可能为null但code=0表示成功
+            # 需要重新查询获取ID
+            logger.info(f"创建押金项目成功，重新查询获取ID: {pledge_name}")
+            # 重新查询找到新项目
+            items = query_cash_pledge_items(community_id)
+            if items is None:
+                return None
+            matched = match_cash_pledge_item(community_id, pledge_name)
+            if matched is None:
+                logger.error(f"创建成功但未找到新项目: {pledge_name}")
+                print(f"✗ 创建押金项目成功但无法获取ID，请重试")
+                return None
+            pledge_id = str(matched.get('id'))
+        else:
+            pledge_id = str(data_obj.get('id', ''))
+
+        logger.info(f"创建押金项目成功: {pledge_name}, ID={pledge_id}")
+        return pledge_id
+    except requests.exceptions.RequestException as e:
+        logger.error(f"创建押金项目发生异常: {e}")
+        print(f"✗ 创建押金项目发生异常，请查看日志")
+        return None
+
+
+def add_cash_pledge_order(community_id: str, asset_id: str, asset_type: int, pledge_item_id: str,
+                          amount_fen: int, pay_type: int) -> Optional[dict]:
+    """调用API收取押金
+
+    Args:
+        community_id: 小区ID
+        asset_id: 房屋资产ID
+        asset_type: 资产类型（1=房屋）
+        pledge_item_id: 押金项目ID
+        amount_fen: 押金金额（单位：分）
+        pay_type: 支付方式编码
+
+    Returns:
+        dict: 响应数据，None 表示收取失败
+    """
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
+    payload = {
+        "cashPledgeId": int(pledge_item_id),
+        "communityId": int(community_id),
+        "houseId": int(asset_id),
+        "payTime": int(time.time() * 1000),
+        "payType": pay_type,
+        "payer": 0,
+        "amount": amount_fen
+    }
+
+    try:
+        response = requests.post(
+            f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/addCashPledgeOrder",
+            json=payload,
+            headers=headers,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logger.error(f"收取押金失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            return None
+
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get('code') != 0:
+            logger.error(f"收取押金失败: {data.get('msg')}")
+            return data.get('msg'), None
+
+        logger.info(f"收取押金成功: 小区={community_id}, 房屋={asset_id}, 押金项目={pledge_item_id}, 金额={amount_fen/100:.2f}")
+        return data.get('data', {})
+    except requests.exceptions.RequestException as e:
+        logger.error(f"收取押金发生异常: {e}")
+        return None
+
+
+def collect_cash_pledge_by_name(charge_system_name: str, community_name: str, node_keyword: str,
+                                pledge_name: str, amount_yuan: float, pay_type_name: str = None) -> None:
+    """第一步：智能匹配收费系统、小区、房屋、押金项目，准备收取押金
+
+    Two-step process:
+    1. This step: do all matching, save to cache, show confirmation to user
+    2. User confirms: call confirm_collect_cash_pledge() to execute
+
+    Args:
+        charge_system_name: 收费系统名称
+        community_name: 小区名称
+        node_keyword: 房屋关键词
+        pledge_name: 押金名称
+        amount_yuan: 押金金额（元）
+        pay_type_name: 支付方式名称（可选，默认现金）
+    """
+    # 检查必要参数
+    if not charge_system_name:
+        print("NEED_INFO: 请提供收费系统名称")
+        print("提示：可以先使用 list_charge_systems 命令查看可用的收费系统")
+        return
+    if not community_name:
+        print("NEED_INFO: 请提供小区名称")
+        return
+    if not node_keyword:
+        print("NEED_INFO: 请提供房屋位置关键词（如楼栋/单元/房屋号）")
+        return
+    if not pledge_name:
+        print("NEED_INFO: 请提供押金名称（如装修押金、水电押金）")
+        return
+    if amount_yuan <= 0:
+        print("错误：押金金额必须大于0")
+        return
+
+    # 获取收费系统映射
+    system_map = get_user_charge_systems(return_map=True)
+    if not system_map:
+        print("获取收费系统列表失败")
+        return
+
+    # 查找收费系统 ID
+    charge_system_id = system_map.get(charge_system_name)
+    if not charge_system_id:
+        print(f"未找到收费系统：{charge_system_name}")
+        print("可用的收费系统：" + ", ".join(system_map.keys()))
+        return
+    print(f"找到收费系统：{charge_system_name}")
+
+    # 搜索小区
+    community_map = search_community(charge_system_id, community_name, return_map=True)
+    if community_map is None:
+        print("搜索小区失败")
+        return
+    if not community_map:
+        print(f"未找到匹配的小区：{community_name}")
+        return
+    if len(community_map) > 1:
+        # 多个匹配，列出供用户选择
+        print(f"找到多个匹配的小区，请使用完整的小区名称重新查询：")
+        for name in community_map.keys():
+            print(f"  - {name}")
+        return
+
+    # 只有一个匹配，继续处理
+    comm_name, comm_id = next(iter(community_map.items()))
+    community_id = str(comm_id)
+    print(f"找到小区：{comm_name}")
+
+    # 先尝试从缓存加载上一次的匹配列表
+    cache_data = load_match_cache()
+    if cache_data and str(cache_data.get('community_id')) == str(community_id):
+        cached_nodes = cache_data.get('nodes', [])
+        if cached_nodes:
+            # 尝试解析用户选择
+            selected_node = parse_user_selection(node_keyword, cached_nodes)
+            if selected_node:
+                logger.info(f"用户选择了: {selected_node.get('name')}")
+                # 清除缓存
+                clear_match_cache()
+                # 检查是否是房屋级别
+                if selected_node['level'] != 'house':
+                    print(f"请选择具体的房屋，当前选择的是{selected_node['name']}（{selected_node['level']}）")
+                    return
+                # 继续处理 - 匹配押金项目
+                asset_id = str(selected_node['id'])
+                asset_type = 1
+                node_name = selected_node['name']
+                logger.info(f"从缓存获取房屋: {node_name}, ID={asset_id}")
+            else:
+                # 解析失败，清除缓存，按新关键词重新搜索
+                logger.info("无法解析用户选择，清除缓存并重新搜索")
+                clear_match_cache()
+                selected_node = None
+    else:
+        selected_node = None
+
+    if 'asset_id' not in locals():
+        # 清理关键词
+        clean_keyword = node_keyword.replace("押金", "").replace("收取", "").replace("的", "").strip()
+
+        # 检查是否使用精确匹配
+        use_exact_match = "/" in clean_keyword
+
+        # 获取完整房屋结构
+        household_data = search_household_structure(str(community_id), "")
+        if household_data is None:
+            print("搜索房屋结构失败")
+            return
+
+        # 找出匹配的节点
+        if use_exact_match:
+            matching_nodes = find_matching_nodes(household_data, clean_keyword, exact_match=True)
+            if not matching_nodes:
+                logger.info("精确匹配未找到结果，使用模糊匹配")
+                keywords = clean_keyword.split("/")
+                search_kw = keywords[-1] if keywords else clean_keyword
+                household_data_for_search = search_household_structure(str(community_id), search_kw)
+                if household_data_for_search:
+                    household_data = household_data_for_search
+                matching_nodes = find_matching_nodes(household_data, clean_keyword)
+        else:
+            keywords = split_keywords(clean_keyword)
+            search_kw = keywords[-1] if keywords else clean_keyword
+            household_data_for_search = search_household_structure(str(community_id), search_kw)
+            if household_data_for_search:
+                household_data = household_data_for_search
+            matching_nodes = find_matching_nodes(household_data, clean_keyword)
+
+        if not matching_nodes:
+            print(f"未找到匹配的房屋: {node_keyword}")
+            return
+
+        if len(matching_nodes) > 1:
+            # 多个匹配，保存到缓存并列出供用户选择
+            print(f"找到多个匹配的房屋，请选择序号：")
+            for idx, node in enumerate(matching_nodes, 1):
+                print(f"  {idx}. {node['name']} ({node['level']})")
+            save_match_cache(community_id, matching_nodes)
+            print(f"\n请使用序号重新选择，例如：confirm_collect_cash_pledge 1")
+            return
+
+        # 只有一个匹配，直接使用
+        selected_node = matching_nodes[0]
+        if selected_node['level'] != 'house':
+            print(f"匹配结果不是房屋，请选择具体的房屋，当前匹配到: {selected_node['name']}（{selected_node['level']}）")
+            return
+        asset_id = str(selected_node['id'])
+        asset_type = 1
+        node_name = selected_node['name']
+        logger.info(f"匹配到房屋: {node_name}, ID={asset_id}")
+
+    print(f"已选择房屋：{node_name}")
+
+    # 4. 匹配押金项目
+    matched_pledge = match_cash_pledge_item(community_id, pledge_name)
+    need_create = False
+    pledge_item_id = None
+    pledge_item_name = pledge_name
+
+    if matched_pledge is None:
+        need_create = True
+        logger.info(f"未找到押金项目 '{pledge_name}'，需要创建")
+    else:
+        pledge_item_id = str(matched_pledge.get('id'))
+        pledge_item_name = matched_pledge.get('cashPledgeName')
+        logger.info(f"找到已有押金项目: {pledge_item_name} (ID={pledge_item_id})")
+
+    # 5. 处理支付方式
+    pay_type = get_pay_type_by_name(pay_type_name) if pay_type_name else 2
+    pay_type_name_result = get_pay_name_by_type(pay_type)
+
+    # 6. 计算金额
+    amount_fen = int(round(amount_yuan * 100))
+
+    # 7. 保存到缓存
+    cache_data = {
+        "charge_system_name": charge_system_name,
+        "community_id": community_id,
+        "community_name": comm_name,
+        "asset_id": asset_id,
+        "asset_type": asset_type,
+        "node_name": node_name,
+        "pledge_item_id": pledge_item_id,
+        "pledge_item_name": pledge_item_name,
+        "amount_fen": amount_fen,
+        "amount_yuan": amount_yuan,
+        "pay_type": pay_type,
+        "pay_type_name": pay_type_name_result,
+        "need_create": need_create
+    }
+    save_cash_pledge_confirmation_cache(cache_data)
+
+    # 8. 输出确认信息
+    print(f"\n### 待收取押金信息\n")
+    print(f"**小区**: {comm_name}")
+    print(f"**房屋**: {node_name}")
+    print(f"**押金项目**: {pledge_item_name}")
+    print(f"**押金金额**: ¥ {amount_yuan:.2f}")
+    print(f"**支付方式**: {pay_type_name_result}")
+
+    if need_create:
+        print(f"\n⚠ 未找到押金项目 '{pledge_name}'，需要创建新项目。")
+
+    print(f"\n请确认是否收取押金？")
+    print(f"- 运行命令 `confirm_collect_cash_pledge yes` 确认收取")
+    print(f"- 运行命令 `confirm_collect_cash_pledge no` 取消")
+    return
+
+
+def confirm_collect_cash_pledge(confirmation_input: str) -> None:
+    """第二步：确认收取押金，执行实际操作
+
+    Args:
+        confirmation_input: 用户确认输入 ('yes'/'no')
+    """
+    # 加载缓存
+    pending_data = load_cash_pledge_confirmation_cache()
+    if not pending_data:
+        print("✗ 没有待确认的押金收取信息，或信息已过期，请重新查询")
+        return
+
+    # 提取缓存信息
+    community_id = pending_data['community_id']
+    community_name = pending_data['community_name']
+    asset_id = pending_data['asset_id']
+    asset_type = pending_data['asset_type']
+    node_name = pending_data['node_name']
+    pledge_item_id = pending_data['pledge_item_id']
+    pledge_item_name = pending_data['pledge_item_name']
+    amount_fen = pending_data['amount_fen']
+    amount_yuan = pending_data['amount_yuan']
+    pay_type = pending_data['pay_type']
+    pay_type_name = pending_data['pay_type_name']
+    need_create = pending_data['need_create']
+
+    # 用户取消
+    if confirmation_input.lower() == 'no' or confirmation_input.lower() == 'n':
+        print("操作已取消")
+        clear_cash_pledge_confirmation_cache()
+        return
+
+    if confirmation_input.lower() != 'yes' and confirmation_input.lower() != 'y':
+        print("输入错误，请输入 yes 或 no")
+        return
+
+    # 如果需要创建，先创建押金项目
+    if need_create:
+        logger.info(f"需要先创建新押金项目: {pledge_item_name}")
+        new_pledge_id = create_cash_pledge_item(community_id, pledge_item_name, amount_fen)
+        if new_pledge_id is None:
+            # 创建失败，可能是因为已经存在，重新查询一次
+            logger.info(f"创建失败，重新查询押金项目: {pledge_item_name}")
+            matched_pledge = match_cash_pledge_item(community_id, pledge_item_name)
+            if matched_pledge is None:
+                # 还是找不到，真的失败了
+                clear_cash_pledge_confirmation_cache()
+                return
+            # 重新查询找到了，使用找到的
+            pledge_item_id = str(matched_pledge.get('id'))
+            pledge_item_name = matched_pledge.get('pledgeName')
+            logger.info(f"重新查询找到已有押金项目: {pledge_item_name} (ID={pledge_item_id})")
+        else:
+            pledge_item_id = new_pledge_id
+
+    # 调用API收取押金
+    logger.info(f"开始收取押金: 小区={community_id}, 房屋={asset_id}, 押金项目={pledge_item_id}, 金额={amount_yuan:.2f}")
+    result = add_cash_pledge_order(community_id, asset_id, asset_type, pledge_item_id, amount_fen, pay_type)
+
+    if result is None:
+        print(f"✗ 收取押金失败，请查看日志")
+        clear_cash_pledge_confirmation_cache()
+        return
+
+    if isinstance(result, tuple):
+        # error case: (message, None)
+        error_msg = result[0]
+        print(f"✗ 收取押金失败: {error_msg}")
+        clear_cash_pledge_confirmation_cache()
+        return
+
+    # 成功，输出结果
+    process_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    print(f"\n✓ 收取押金成功！\n")
+    print(f"**小区**: {community_name}")
+    print(f"**房屋**: {node_name}")
+    print(f"**押金项目**: {pledge_item_name}")
+    print(f"**押金金额**: ¥ {amount_yuan:.2f}")
+    print(f"**支付方式**: {pay_type_name}")
+    print(f"**收取时间**: {process_time_str}\n")
+
+    # 清除缓存
+    clear_cash_pledge_confirmation_cache()
+    logger.info(f"收取押金完成: {community_name} / {node_name} / {pledge_item_name} / {amount_yuan:.2f}")
+
+
 def generate_web_bill_share_url(community_id: int, asset_id: int, bill_ids: list) -> dict:
     """
     调用 API 生成微信账单分享链接
@@ -9618,6 +10189,40 @@ if __name__ == "__main__":
         else:
             selection_input = sys.argv[2]
             confirm_charge_work_order(selection_input)
+    elif command == "collect_cash_pledge":
+        # 收取押金（推荐，智能匹配，两步完成）
+        # 用法: collect_cash_pledge <收费系统名称> <小区名称> <房屋关键词> <押金名称> <金额> [支付方式]
+        # 金额单位：元
+        # 支付方式默认：现金
+        if len(sys.argv) < 7:
+            print("错误：请提供收费系统名称、小区名称、房屋关键词、押金名称和金额")
+            print("用法: python3 main.py collect_cash_pledge <收费系统名称> <小区名称> <房屋关键词> <押金名称> <金额> [支付方式]")
+            print("示例（完整格式）: python3 main.py collect_cash_pledge 收费系统 小区 1栋/1单元/101 装修押金 1000 现金")
+            print("示例（默认支付方式）: python3 main.py collect_cash_pledge 收费系统 小区 1栋/1单元/101 装修押金 1000")
+        else:
+            charge_system_name = sys.argv[2]
+            community_name = sys.argv[3]
+            keyword = sys.argv[4]
+            pledge_name = sys.argv[5]
+
+            try:
+                amount_yuan = float(sys.argv[6])
+            except ValueError:
+                print("错误：金额必须是数字，请检查参数位置")
+                exit(1)
+
+            pay_type_name = sys.argv[7] if len(sys.argv) >= 8 else None
+            collect_cash_pledge_by_name(charge_system_name, community_name, keyword, pledge_name, amount_yuan, pay_type_name)
+    elif command == "confirm_collect_cash_pledge":
+        # 确认收取押金，执行操作
+        if len(sys.argv) < 3:
+            print("错误：请提供确认选项（yes/no）")
+            print("用法: python3 main.py confirm_collect_cash_pledge <yes/no>")
+            print("示例: python3 main.py confirm_collect_cash_pledge yes")
+            print("示例: python3 main.py confirm_collect_cash_pledge no")
+        else:
+            confirmation_input = sys.argv[2]
+            confirm_collect_cash_pledge(confirmation_input)
     else:
         print("错误：未知的指令或参数不足")
         print("可用指令:")
@@ -9667,3 +10272,5 @@ if __name__ == "__main__":
         print("  confirm_discount <yes/no/序号> - 确认优惠，处理用户选择")
         print("  clear_late_money <收费系统名称> <小区名称> <房屋关键词> [开始日期] [结束日期] [收费项目] [设置金额] - 设置违约金（默认清零，推荐，智能匹配，两步完成）")
         print("  confirm_clear_late_money <yes/no/序号> - 确认设置违约金，处理用户选择")
+        print("  collect_cash_pledge <收费系统名称> <小区名称> <房屋关键词> <押金名称> <金额> [支付方式] - 收取押金（装修押金、水电押金等，推荐，智能匹配，两步完成）")
+        print("  confirm_collect_cash_pledge <yes/no> - 确认收取押金，处理用户选择")
