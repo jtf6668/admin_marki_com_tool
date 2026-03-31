@@ -88,7 +88,7 @@ pip install -r {baseDir}/requirements.txt
 | 查询当前登录用户信息 | `python3 {baseDir}/scripts/main.py get_current_user_info` |
 | 发送微信缴费提醒 | `python3 {baseDir}/scripts/main.py send_wechat_reminder <收费系统名称> <小区名称>` |
 
-## 房屋匹配规则（欠费查询/抄表通用）
+## 房屋匹配规则（所有模块通用）
 
 当查询房屋、楼栋、单元时，遵循以下规则：
 
