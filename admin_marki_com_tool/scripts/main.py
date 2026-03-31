@@ -8818,16 +8818,23 @@ def generate_receipt_for_house(community_id: str, asset_id: str, asset_type: int
         print("缴费记录列表：")
         for idx, record in enumerate(records, 1):
             pay_time_str = datetime.fromtimestamp(record.get('payTime', 0)).strftime('%Y-%m-%d %H:%M')
-            amount_yuan = record.get('actualAmount', 0) / 100
+            amount_yuan = record.get('incomeAmount', record.get('actualAmount', 0)) / 100
             receipt_state = record.get('receiptState', 1)  # 1=未生成，2=已生成
             state_text = "已生成" if receipt_state == 2 else "未生成"
-            pay_way = record.get('payWayName', '未知')
+            pay_way = record.get('payTypeStr', record.get('payWayName', '未知'))
             remark = record.get('remark', '')
             remark_text = f" - {remark}" if remark else ""
-            charge_item_names = [item.get('chargeItemName', '') for item in record.get('detail', []) if item.get('chargeItemName')]
+            # 从 payItems 提取收费项目名称（API 返回格式：[{"name": "电费押金", "amount": 100000}, ...]）
+            charge_item_names = [item.get('name', '') for item in record.get('payItems', []) if item.get('name')]
+            # 如果 payItemStr 存在也一并使用
+            pay_item_str = record.get('payItemStr', '')
+            if pay_item_str and not charge_item_names:
+                charge_item_names = [pay_item_str]
             charge_item_text = ", ".join(charge_item_names)
             if charge_item_text:
                 charge_item_text = f"[{charge_item_text}] "
+            if not charge_item_text:
+                charge_item_text = "[未知] "
             print(f"{idx}. [{pay_time_str}] {charge_item_text}¥ {amount_yuan:.2f} - {pay_way}{remark_text} ({state_text})")
 
         print(f"\n请确认生成哪些收据：")

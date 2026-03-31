@@ -17,18 +17,6 @@ requires:
 pip install -r {baseDir}/requirements.txt
 ```
 
-## 功能模块
-
-本技能采用模块化设计，根据查询类型读取对应模块文档：
-
-| 模块 | 功能 | 文件位置 |
-|------|------|----------|
-| [欠费查询](./references/arrears.md) | 小区欠费总额、本年度物业费欠费、自定义范围欠费、楼栋/单元/房屋欠费、欠费户数统计 | `{baseDir}/references/arrears.md` |
-| [报表数据](./references/reports.md) | 今日收入统计、自定义范围收入统计、本月支出统计、本月收缴率统计 | `{baseDir}/references/reports.md` |
-| [抄表](./references/meter.md) | 水表/电表抄表、查询当前读数 | `{baseDir}/references/meter.md` |
-| [催费](./references/reminder.md) | *(预留)* 短信催缴、微信催费、生成催缴通知单等 | `{baseDir}/references/reminder.md` |
-| [收款](./references/collection.md) | *(预留)* 收费收款、优惠减免、预存款充值等 | `{baseDir}/references/collection.md` |
-
 **使用规则**：
 - 根据用户问题的类型，读取对应的模块文件获取详细处理流程
 - 多个模块涉及的通用规则（如登录处理、房屋匹配）请参见下文
@@ -116,3 +104,14 @@ pip install -r {baseDir}/requirements.txt
 - `_get_charge_system_map` - 获取 `{收费系统名称: 收费系统ID}` 的 JSON 映射
 - `_get_community_map <收费系统ID> <小区关键词>` - 获取 `{小区名称: 小区ID}` 的 JSON 映射
 
+## 功能模块
+
+本技能采用模块化设计，根据查询类型读取对应模块文档：
+
+| 模块 | 功能 | 文件位置 |
+|------|------|----------|
+| [欠费查询](./references/arrears.md) | 小区欠费总额、本年度物业费欠费、自定义范围欠费、楼栋/单元/房屋欠费、欠费户数统计 | `{baseDir}/references/arrears.md` |
+| [报表数据](./references/reports.md) | 今日收入统计、自定义范围收入统计、本月支出统计、本月收缴率统计 | `{baseDir}/references/reports.md` |
+| [抄表](./references/meter.md) | 水表/电表抄表、查询当前读数 | `{baseDir}/references/meter.md` |
+| [催费](./references/reminder.md) | *(预留)* 短信催缴、微信催费、生成催缴通知单等 | `{baseDir}/references/reminder.md` |
+| [收款](./references/collection.md) | *(预留)* 收费收款、优惠减免、预存款充值等 | `{baseDir}/references/collection.md` |
