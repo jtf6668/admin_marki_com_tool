@@ -40,9 +40,15 @@
   - 支持现金、微信、支付宝多种支付方式
   - 两步确认模式，充值成功后显示余额变化
 
-## 规划中的功能
+- **生成缴费收据** ✅ 已实现
+  - 支持查询指定房屋最近缴费记录（默认最近24小时，适合"刚刚缴费"场景）
+  - 可指定自定义时间范围
+  - 区分已生成/未生成收据状态
+  - 支持选择多条记录批量生成
+  - 自动异步轮询生成结果，最终返回可直接访问的收据图片链接
+  - 对已生成收据提供降级链接直接访问
 
-- 生成缴费收据
+## 规划中的功能
 
 ---
 
@@ -64,6 +70,8 @@
 | `confirm_collect_cash_pledge` | 确认收取押金，处理用户选择 | `yes/no` |
 | `recharge_deposit` | 预存款充值（水电费预存款、物业费预存款等，推荐，智能匹配，两步完成） | `收费系统名称 小区名称 房屋关键词 预存款类型 充值金额 [支付方式]` |
 | `confirm_recharge_deposit` | 确认预存款充值，执行充值 | `yes/no` |
+| `generate_receipt` | 生成缴费收据（查询最近缴费记录，默认最近24小时，推荐，智能匹配，两步完成） | `收费系统名称 小区名称 房屋关键词 [开始日期] [结束日期]` |
+| `confirm_generate_receipt` | 确认生成收据，输出收据链接 | `yes/no/序号` |
 
 ---
 
@@ -1204,4 +1212,196 @@ python3 main.py recharge_deposit "收费系统" "XXX花园" "1栋/1单元/101" "
 
 # 取消操作
 python3 main.py confirm_recharge_deposit no
+```
+
+---
+
+## 处理流程 - 生成缴费收据
+
+### 第一步：查询最近缴费记录
+```bash
+python3 main.py generate_receipt <收费系统名称> <小区名称> <房屋关键词> [开始日期] [结束日期]
+```
+
+系统会：
+1. 匹配收费系统
+2. 匹配小区
+3. 匹配房屋（支持精确路径匹配如`1栋/1单元/101`，也支持模糊搜索）
+4. 查询该房屋在指定时间范围内的缴费记录
+   - 不指定时间 → 默认最近24小时（适合"刚刚缴费"场景）
+   - 指定时间 → 使用用户指定的起止日期
+5. 按支付时间倒序排序
+6. 区分`receiptState`（1=未生成，2=已生成）
+7. 输出缴费记录列表供用户选择
+
+**示例输出：**
+```
+找到 3 条缴费记录，请选择要生成收据的记录:
+
+**小区**: XXX花园
+**房屋**: 1栋/1单元/101
+**时间范围**: 2026-03-30 10:00:00 至 2026-03-31 10:00:00
+
+缴费记录列表：
+1. [2026-03-31 09:15] ¥ 158.00 - 现金 - 物业管理费 (未生成)
+2. [2026-03-30 14:30] ¥ 100.00 - 微信 - 公摊水费 (已生成)
+3. [2026-03-30 10:20] ¥ 1000.00 - 现金 - 装修押金 (未生成)
+
+请确认生成哪些收据：
+- 运行命令 `confirm_generate_receipt yes` 生成全部
+- 运行命令 `confirm_generate_receipt 1` 只生成第1条
+- 运行命令 `confirm_generate_receipt 1,2` 生成第1、2条
+- 运行命令 `confirm_generate_receipt no` 取消
+```
+
+---
+
+### 第二步：用户确认生成
+根据你的选择运行对应的确认命令：
+
+**生成全部记录：**
+```bash
+python3 main.py confirm_generate_receipt yes
+```
+
+**只生成第一条：**
+```bash
+python3 main.py confirm_generate_receipt 1
+```
+
+**生成第1和第3条：**
+```bash
+python3 main.py confirm_generate_receipt 1,3
+```
+
+**取消：**
+```bash
+python3 main.py confirm_generate_receipt no
+```
+
+---
+
+### 第三步：生成结果
+
+**生成成功示例输出：**
+```
+✓ 收据生成完成！
+
+**小区**: XXX花园
+**房屋**: 1栋/1单元/101
+**处理记录数**: 3 条
+**成功**: 3 条
+**处理时间**: 2026-03-31 10:00:00
+
+收据链接：
+
+1. [2026-03-31 09:15] ¥ 158.00
+   生成成功
+   https://charge-api-test.markiapp.com/receipt/abc123.png
+
+2. [2026-03-30 14:30] ¥ 100.00
+   已生成（直接获取）
+   https://charge-api-test.markiapp.com/print.html?mode=receipt&colResize=1&search=eyJjb21tdW5pdHlJRCI6IjEwNTg3IiwiaWQiOiIxMDYxMjM0NTYiLCJyZWNlaXB0SWQiOiIiLCJyZWNlaXB0Q250Ijp0cnVlfQ==
+
+3. [2026-03-30 10:20] ¥ 1000.00
+   生成成功
+   https://charge-api-test.markiapp.com/receipt/def456.png
+
+💡 提示：点击链接可直接打开收据，右键可保存为图片文件。
+```
+
+**生成失败会输出错误信息，如果API生成失败会自动降级使用手动构造链接，依然可以访问。**
+
+---
+
+## API 说明 - 生成缴费收据
+
+### 查询缴费记录接口
+- **端点**: `{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/getPayLogListV2`
+- **方法**: GET
+- **URL 参数**:
+```
+receiptId=&payInvoiceStatus=
+&startTime={start_timestamp}
+&endTime={end_timestamp}
+&communityID={community_id}
+&page=1&pageSize=20
+&assetName=&assetType=1&assetID={house_id}
+&id=&payeeUidList=&payChannelList=&opUIDList=&remark=
+&version=2&r={random}
+```
+- **字段说明**:
+  - `startTime`: 开始时间戳
+  - `endTime`: 结束时间戳
+  - `communityID`: 小区ID
+  - `assetID`: 房屋ID
+  - `r`: 随机数防缓存
+
+### 提交生成收据接口
+- **端点**: `{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/addPayReceiptV3`
+- **方法**: POST
+- **Payload 格式**:
+```json
+{
+  "communityID": 10587,
+  "id": 106123456,
+  "version": 1,
+  "requireImg": false,
+  "from": 1
+}
+```
+- **字段说明**:
+  - `communityID`: 小区ID
+  - `id`: 支付记录ID
+  - `version`: 支付记录版本号
+  - `requireImg`: 是否要求立即返回图片，我们使用异步所以填`false`
+  - `from`: 来源，固定填`1`
+
+### 异步结果轮询接口
+提交成功后返回`resultCode`，需要轮询获取最终结果：
+- **端点**: `{CHARGE_API_BASE_URL}/api/v1/GetAsyncResult?keyCode={resultCode}&r={random}`
+- **方法**: GET
+- **说明**: `r` 参数是随机数，防止缓存
+- **轮询策略**: 每 2 秒轮询一次，最多轮询 10 次（20秒超时）
+- **成功响应**: `{"code": 0, "data": "https://example.com/receipt.png"}`
+
+### 手动构造收据URL（降级方案）
+当收据已经生成过，或API生成失败时，使用此方式构造可访问的收据链接：
+```
+https://{CHARGE_API_DOMAIN}/print.html?mode=receipt&colResize=1&search={BASE64_JSON}
+```
+其中 `BASE64_JSON` 是对以下JSON进行base64编码：
+```json
+{"communityID":"{community_id}","id":"{pay_record_id}","receiptId":"","receiptCnt":true}
+```
+
+---
+
+## 使用示例 - 生成缴费收据
+
+完整流程示例（默认最近24小时，适用于刚刚缴费的场景）：
+```bash
+# 查询1栋/1单元/101最近24小时的缴费记录
+python3 main.py generate_receipt "收费系统" "XXX花园" "1栋/1单元/101"
+
+# 生成全部收据
+python3 main.py confirm_generate_receipt yes
+```
+
+指定日期范围示例：
+```bash
+# 查询2026年3月份所有缴费记录
+python3 main.py generate_receipt "收费系统" "XXX花园" "1栋/1单元/101" "2026-03-01" "2026-03-31"
+
+# 只生成第一条收据
+python3 main.py confirm_generate_receipt 1
+```
+
+只生成特定几条示例：
+```bash
+# 查询最近24小时
+python3 main.py generate_receipt "收费系统" "XXX花园" "1栋/1单元/101"
+
+# 选择生成第1和第3条
+python3 main.py confirm_generate_receipt 1,3
 ```

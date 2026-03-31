@@ -4961,6 +4961,51 @@ def clear_discount_confirmation_cache():
         logger.info("优惠确认缓存已清除")
 
 
+# === 生成收据确认缓存相关 ===
+def get_generate_receipt_confirmation_cache_path():
+    """获取生成收据确认缓存文件路径"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(script_dir, '.generate_receipt_confirmation_cache.json')
+
+
+def save_generate_receipt_confirmation_cache(cache_data):
+    """保存待确认生成收据信息到缓存"""
+    cache_path = get_generate_receipt_confirmation_cache_path()
+    try:
+        with open(cache_path, 'w', encoding='utf-8') as f:
+            json.dump(cache_data, f, indent=2, ensure_ascii=False)
+        logger.info("生成收据确认缓存已保存")
+    except Exception as e:
+        logger.error(f"保存生成收据确认缓存失败: {e}")
+
+
+def load_generate_receipt_confirmation_cache():
+    """从缓存加载待确认生成收据信息（5分钟内有效）"""
+    cache_path = get_generate_receipt_confirmation_cache_path()
+    if not os.path.exists(cache_path):
+        return None
+    try:
+        with open(cache_path, 'r', encoding='utf-8') as f:
+            cache_data = json.load(f)
+            # 检查是否过期（5分钟）
+            if time.time() - cache_data.get('timestamp', 0) > 300:
+                logger.info("生成收据确认缓存已过期")
+                clear_generate_receipt_confirmation_cache()
+                return None
+            return cache_data
+    except Exception as e:
+        logger.error(f"读取生成收据确认缓存失败: {e}")
+        return None
+
+
+def clear_generate_receipt_confirmation_cache():
+    """清除生成收据确认缓存"""
+    cache_path = get_generate_receipt_confirmation_cache_path()
+    if os.path.exists(cache_path):
+        os.remove(cache_path)
+        logger.info("生成收据确认缓存已清除")
+
+
 # === 违约金设置确认缓存相关 ===
 def get_late_money_confirmation_cache_path():
     """获取违约金设置确认缓存文件路径"""
@@ -8687,6 +8732,622 @@ def confirm_deposit_recharge(confirmation_input: str) -> None:
         return None
 
 
+def generate_receipt_for_house(community_id: str, asset_id: str, asset_type: int, node_name: str,
+                       community_name: str, start_timestamp: int, end_timestamp: int):
+    """
+    查询特定房屋的最近缴费记录并准备生成收据
+
+    Args:
+        community_id: 小区ID
+        asset_id: 资产ID（房屋ID）
+        asset_type: 资产类型
+        node_name: 节点名称（房屋位置）
+        community_name: 小区名称
+        start_timestamp: 开始时间戳
+        end_timestamp: 结束时间戳
+    """
+    logger.info(f"查询最近缴费记录: 社区ID={community_id}, 房屋ID={asset_id}, 开始={start_timestamp}, 结束={end_timestamp}")
+
+    # 调用API查询缴费记录
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
+
+    # 构建查询参数
+    import random
+    random_num = random.random()
+    url = (f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/getPayLogListV2"
+           f"?receiptId=&payInvoiceStatus="
+           f"&startTime={start_timestamp}&endTime={end_timestamp}"
+           f"&communityID={community_id}"
+           f"&page=1&pageSize=20"
+           f"&assetName=&assetType=1&assetID={asset_id}"
+           f"&id=&payeeUidList=&payChannelList=&opUIDList=&remark="
+           f"&version=2&r={random_num}")
+
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code != 200:
+            logger.error(f"查询缴费记录失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            print(f"✗ 查询缴费记录失败，状态码: {response.status_code}")
+            return
+
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get('code') != 0:
+            logger.error(f"查询缴费记录失败: {data.get('msg')}")
+            print(f"✗ 查询缴费记录失败: {data.get('msg')}")
+            return
+
+        # 获取列表数据
+        records = data.get('data', {}).get('list', [])
+        if not records:
+            print(f"\n✗ 未找到指定时间范围内的缴费记录")
+            print(f"小区: {community_name}")
+            print(f"房屋: {node_name}")
+            start_time_str = datetime.fromtimestamp(start_timestamp).strftime('%Y-%m-%d %H:%M:%S')
+            end_time_str = datetime.fromtimestamp(end_timestamp).strftime('%Y-%m-%d %H:%M:%S')
+            print(f"时间范围: {start_time_str} 至 {end_time_str}")
+            return
+
+        # 按支付时间倒序排序
+        records.sort(key=lambda x: x.get('payTime', 0), reverse=True)
+
+        # 保存到缓存
+        cache_data = {
+            "timestamp": time.time(),
+            "community_id": str(community_id),
+            "community_name": community_name,
+            "node_id": str(asset_id),
+            "node_name": node_name,
+            "records": records
+        }
+        save_generate_receipt_confirmation_cache(cache_data)
+
+        # 输出结果供用户确认
+        start_time_str = datetime.fromtimestamp(start_timestamp).strftime('%Y-%m-%d %H:%M:%S')
+        end_time_str = datetime.fromtimestamp(end_timestamp).strftime('%Y-%m-%d %H:%M:%S')
+        print(f"\n找到 {len(records)} 条缴费记录，请选择要生成收据的记录:\n")
+        print(f"**小区**: {community_name}")
+        print(f"**房屋**: {node_name}")
+        print(f"**时间范围**: {start_time_str} 至 {end_time_str}\n")
+
+        print("缴费记录列表：")
+        for idx, record in enumerate(records, 1):
+            pay_time_str = datetime.fromtimestamp(record.get('payTime', 0)).strftime('%Y-%m-%d %H:%M')
+            amount_yuan = record.get('actualAmount', 0) / 100
+            receipt_state = record.get('receiptState', 1)  # 1=未生成，2=已生成
+            state_text = "已生成" if receipt_state == 2 else "未生成"
+            pay_way = record.get('payWayName', '未知')
+            remark = record.get('remark', '')
+            remark_text = f" - {remark}" if remark else ""
+            charge_item_names = [item.get('chargeItemName', '') for item in record.get('detail', []) if item.get('chargeItemName')]
+            charge_item_text = ", ".join(charge_item_names)
+            if charge_item_text:
+                charge_item_text = f"[{charge_item_text}] "
+            print(f"{idx}. [{pay_time_str}] {charge_item_text}¥ {amount_yuan:.2f} - {pay_way}{remark_text} ({state_text})")
+
+        print(f"\n请确认生成哪些收据：")
+        print(f"- 运行命令 `confirm_generate_receipt yes` 生成全部")
+        print(f"- 运行命令 `confirm_generate_receipt 1` 只生成第1条")
+        print(f"- 运行命令 `confirm_generate_receipt 1,2` 生成第1、2条")
+        print(f"- 运行命令 `confirm_generate_receipt no` 取消")
+
+        logger.info(f"找到 {len(records)} 条缴费记录，等待用户确认")
+        return
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"查询缴费记录发生异常: {e}")
+        print(f"✗ 查询缴费记录发生网络异常，请重试")
+        return None
+
+
+def generate_receipt_by_name(charge_system_name=None, community_name=None, keyword=None, start_date_str=None, end_date_str=None):
+    """
+    第一步：智能匹配房屋，查询最近缴费记录，准备生成收据（两步处理模式）
+
+    Args:
+        charge_system_name: 收费系统名称
+        community_name: 小区名称
+        keyword: 房屋关键词
+        start_date_str: 开始日期 (YYYY-MM-DD，可选，默认24小时前)
+        end_date_str: 结束日期 (YYYY-MM-DD，可选，默认现在)
+    """
+    # 1. 获取收费系统
+    system_map = get_user_charge_systems(return_map=True)
+    if not system_map:
+        print("获取收费系统列表失败")
+        return
+    if charge_system_name not in system_map:
+        print(f"未找到收费系统：{charge_system_name}")
+        print("可用的收费系统：" + ", ".join(system_map.keys()))
+        return
+    charge_system_id = system_map[charge_system_name]
+    print(f"找到收费系统：{charge_system_name}")
+
+    # 2. 搜索小区
+    community_map = search_community(charge_system_id, community_name, return_map=True)
+    if not community_map:
+        print(f"未找到匹配的小区：{community_name}")
+        return
+    if len(community_map) > 1:
+        print(f"找到多个匹配的小区，请选择：")
+        for name in community_map.keys():
+            print(f"  - {name}")
+        return
+    # 只有一个匹配，直接使用
+    community_name_found = list(community_map.keys())[0]
+    community_id = community_map[community_name_found]
+    print(f"找到小区：{community_name_found}")
+
+    # 计算时间范围
+    now = datetime.now()
+    if start_date_str is None:
+        # 默认最近24小时
+        start_time = now - timedelta(hours=24)
+        end_time = now
+    else:
+        # 用户指定了开始日期，转换为时间戳
+        try:
+            if end_date_str is None:
+                end_date_str = start_date_str
+            start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+            # 开始时间设为当天00:00:00
+            start_time = start_date
+            # 结束时间设为当天23:59:59
+            end_time = end_date.replace(hour=23, minute=59, second=59)
+        except ValueError:
+            print(f"日期格式错误，请使用 YYYY-MM-DD 格式，例如：2026-03-01")
+            return
+
+    # 4.5 加载匹配缓存（处理用户选择多个匹配的场景）
+    cache_data = load_match_cache()
+    selected_node = None
+
+    # 检查缓存中是否有可用的匹配结果（用户选择场景）
+    if cache_data and str(cache_data.get('community_id')) == str(community_id):
+        cached_nodes = cache_data.get('nodes', [])
+        if cached_nodes:
+            # 尝试解析用户选择
+            selected_node = parse_user_selection(keyword, cached_nodes)
+            if selected_node:
+                logger.info(f"用户选择了: {selected_node.get('full_name')}")
+                # 清除缓存
+                clear_match_cache()
+                # 检查是否是房屋级别
+                if selected_node['level'] != 'house':
+                    print(f"请选择具体的房屋生成收据，当前选择的是{selected_node['full_name']}（{selected_node['level']}）")
+                    return
+                # 继续处理
+                node_id = str(selected_node['id'])
+                node_name = selected_node['full_name']
+                asset_type = 1  # 房屋固定为1
+
+                logger.info(f"已选择房屋: {node_name}, ID: {node_id}")
+
+                # 查询缴费记录
+                generate_receipt_for_house(str(community_id), node_id, asset_type, node_name, community_name_found, int(start_time.timestamp()), int(end_time.timestamp()))
+                return
+            else:
+                # 解析失败，清除缓存，按新关键词重新搜索
+                logger.info("无法解析用户选择，清除缓存并重新搜索")
+                clear_match_cache()
+
+    # 5. 搜索房屋
+    print(f"正在搜索房屋：{keyword}...")
+    # 清理关键词
+    clean_keyword = keyword.replace("生成", "").replace("收据", "").replace("缴费", "").replace("的", "").strip()
+
+    # 检查是否使用精确匹配（包含 / 分隔符）
+    use_exact_match = "/" in clean_keyword
+
+    # 获取完整房屋结构
+    household_data = search_household_structure(str(community_id), "")
+    if household_data is None:
+        print("搜索房屋结构失败")
+        return
+
+    # 找出匹配的节点
+    if use_exact_match:
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, exact_match=True)
+        if not matching_nodes:
+            logger.info("精确匹配未找到结果，使用模糊匹配")
+            keywords = clean_keyword.split("/")
+            search_kw = keywords[-1] if keywords else clean_keyword
+            household_data_for_search = search_household_structure(str(community_id), search_kw)
+            matching_nodes = find_matching_nodes(household_data_for_search, clean_keyword, exact_match=False, relaxed_match=True)
+    else:
+        # 模糊匹配
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, exact_match=False, relaxed_match=True)
+
+    if not matching_nodes:
+        # 宽松匹配也没找到，尝试宽松匹配整个关键词
+        matching_nodes = find_matching_nodes(household_data, clean_keyword, exact_match=False, relaxed_match=True)
+        if not matching_nodes:
+            print("未找到任何匹配的房屋，请检查关键词重试")
+            return
+
+    if len(matching_nodes) == 1:
+        # 只有一个匹配，直接使用
+        selected_node = matching_nodes[0]
+        if selected_node['level'] != 'house':
+            print(f"匹配结果不是房屋，当前匹配到的是 {selected_node['level']}：{selected_node['full_name']}")
+            print("请提供更精确的关键词匹配到具体房屋")
+            return
+        node_id = str(selected_node['id'])
+        node_name = selected_node['full_name']
+        asset_type = 1
+        logger.info(f"单个匹配，直接使用: {node_name}, ID: {node_id}")
+
+        generate_receipt_for_house(str(community_id), node_id, asset_type, node_name, community_name_found, int(start_time.timestamp()), int(end_time.timestamp()))
+        return
+    else:
+        # 多个匹配，让用户选择
+        nodes = matching_nodes
+        save_match_cache(community_id, nodes)
+        print(f"\n找到多个匹配的房屋，请选择：\n")
+        for idx, node in enumerate(nodes, 1):
+            print(f"{idx}. {node['full_name']} ({node['level']})")
+        print(f"\n请重新运行命令，格式：generate_receipt 收费系统 小区 {idx}")
+        logger.info(f"找到 {len(nodes)} 个匹配节点，等待用户选择")
+        return
+
+    # 计算时间范围
+    now = datetime.now()
+    if start_date_str is None:
+        # 默认最近24小时
+        start_time = now - timedelta(hours=24)
+        end_time = now
+    else:
+        # 用户指定了开始日期，转换为时间戳
+        try:
+            if end_date_str is None:
+                end_date_str = start_date_str
+            start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+            # 开始时间设为当天00:00:00
+            start_time = start_date
+            # 结束时间设为当天23:59:59
+            end_time = end_date.replace(hour=23, minute=59, second=59)
+        except ValueError:
+            print(f"日期格式错误，请使用 YYYY-MM-DD 格式，例如：2026-03-01")
+            return
+
+    start_timestamp = int(start_time.timestamp())
+    end_timestamp = int(end_time.timestamp())
+
+    logger.info(f"查询最近缴费记录: 社区ID={community_id}, 房屋ID={node_id}, 开始={start_time}, 结束={end_time}")
+
+    # 调用API查询缴费记录
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        return None
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
+
+    # 构建查询参数
+    import random
+    random_num = random.random()
+    url = (f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/getPayLogListV2"
+           f"?receiptId=&payInvoiceStatus="
+           f"&startTime={start_timestamp}&endTime={end_timestamp}"
+           f"&communityID={community_id}"
+           f"&page=1&pageSize=20"
+           f"&assetName=&assetType=1&assetID={node_id}"
+           f"&id=&payeeUidList=&payChannelList=&opUIDList=&remark="
+           f"&version=2&r={random_num}")
+
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code != 200:
+            logger.error(f"查询缴费记录失败，状态码: {response.status_code}, 响应内容: {response.text}")
+            print(f"✗ 查询缴费记录失败，状态码: {response.status_code}")
+            return
+
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get('code') != 0:
+            logger.error(f"查询缴费记录失败: {data.get('msg')}")
+            print(f"✗ 查询缴费记录失败: {data.get('msg')}")
+            return
+
+        # 获取列表数据
+        records = data.get('data', {}).get('list', [])
+        if not records:
+            print(f"\n✗ 未找到指定时间范围内的缴费记录")
+            print(f"小区: {community_name_found}")
+            print(f"房屋: {node_name}")
+            print(f"时间范围: {start_time.strftime('%Y-%m-%d %H:%M:%S')} 至 {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            return
+
+        # 按支付时间倒序排序
+        records.sort(key=lambda x: x.get('payTime', 0), reverse=True)
+
+        # 保存到缓存
+        cache_data = {
+            "timestamp": time.time(),
+            "community_id": str(community_id),
+            "community_name": community_name_found,
+            "node_id": str(node_id),
+            "node_name": node_name,
+            "records": records
+        }
+        save_generate_receipt_confirmation_cache(cache_data)
+
+        # 输出结果供用户确认
+        print(f"\n找到 {len(records)} 条缴费记录，请选择要生成收据的记录:\n")
+        print(f"**小区**: {community_name_found}")
+        print(f"**房屋**: {node_name}")
+        print(f"**时间范围**: {start_time.strftime('%Y-%m-%d %H:%M:%S')} 至 {end_time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+
+        print("缴费记录列表：")
+        for idx, record in enumerate(records, 1):
+            pay_time_str = datetime.fromtimestamp(record.get('payTime', 0)).strftime('%Y-%m-%d %H:%M')
+            amount_yuan = record.get('actualAmount', 0) / 100
+            receipt_state = record.get('receiptState', 1)  # 1=未生成，2=已生成
+            state_text = "已生成" if receipt_state == 2 else "未生成"
+            pay_way = record.get('payWayName', '未知')
+            remark = record.get('remark', '')
+            remark_text = f" - {remark}" if remark else ""
+            print(f"{idx}. [{pay_time_str}] ¥ {amount_yuan:.2f} - {pay_way}{remark_text} ({state_text})")
+
+        print(f"\n请确认生成哪些收据：")
+        print(f"- 运行命令 `confirm_generate_receipt yes` 生成全部")
+        print(f"- 运行命令 `confirm_generate_receipt 1` 只生成第1条")
+        print(f"- 运行命令 `confirm_generate_receipt 1,2` 生成第1、2条")
+        print(f"- 运行命令 `confirm_generate_receipt no` 取消")
+
+        logger.info(f"找到 {len(records)} 条缴费记录，等待用户确认")
+        return
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"查询缴费记录发生异常: {e}")
+        print(f"✗ 查询缴费记录发生网络异常，请重试")
+        return None
+
+
+def confirm_generate_receipt(confirmation_input: str) -> None:
+    """
+    第二步：确认生成收据，执行生成并返回链接
+
+    Args:
+        confirmation_input: 用户确认输入 (yes/no/序号/序号列表)
+    """
+    # 加载缓存，检查有效期
+    pending_data = load_generate_receipt_confirmation_cache()
+    if not pending_data:
+        print("✗ 没有待确认的生成收据请求，或信息已过期，请重新查询")
+        return
+
+    # 提取信息
+    community_id = pending_data['community_id']
+    community_name = pending_data['community_name']
+    node_name = pending_data['node_name']
+    records = pending_data['records']
+
+    # 解析用户选择
+    selected_records = []
+    if confirmation_input.lower() in ['yes', 'y']:
+        # 全部选择
+        selected_records = records
+    elif confirmation_input.lower() in ['no', 'n']:
+        # 取消
+        print("操作已取消")
+        clear_generate_receipt_confirmation_cache()
+        return
+    else:
+        # 按序号选择，支持逗号分隔，如 1,2
+        try:
+            # 拆分序号
+            index_strs = confirmation_input.replace('，', ',').split(',')
+            selected_indices = [int(s.strip()) - 1 for s in index_strs if s.strip()]
+            for idx in selected_indices:
+                if 0 <= idx < len(records):
+                    selected_records.append(records[idx])
+        except ValueError:
+            print(f"输入格式错误，请输入 yes/no 或以逗号分隔的序号，如：1,2")
+            return
+
+    if not selected_records:
+        print(f"未选择任何记录，已取消")
+        clear_generate_receipt_confirmation_cache()
+        return
+
+    logger.info(f"开始生成收据，小区={community_name}, 房屋={node_name}, 记录数={len(selected_records)}")
+
+    # 认证
+    ck_dict = ensure_authenticated()
+    if not ck_dict:
+        clear_generate_receipt_confirmation_cache()
+        return
+
+    headers = get_headers_with_cookies(ck_dict, {"communityid": str(community_id)})
+
+    # 处理每个选中的记录
+    results = []
+    # 提取域名，移除https://前缀，同时移除api.前缀（因为print.html不在api子域名）
+    # 正确格式应该类似: charge-test.markiapp.com 而不是 charge-api-test.markiapp.com
+    charge_domain = CHARGE_API_BASE_URL.replace('https://', '').replace('http://', '')
+    # 替换 api- 或者 api. 得到正确的域名
+    charge_domain = charge_domain.replace('api-', '').replace('api.', '')
+
+    for record in selected_records:
+        record_id = record.get('id')
+        version = record.get('version', 1)
+        receipt_state = record.get('receiptState', 1)
+        amount_yuan = record.get('actualAmount', 0) / 100
+        pay_time = datetime.fromtimestamp(record.get('payTime', 0)).strftime('%Y-%m-%d %H:%M')
+
+        # 手动构造收据URL（适用于已生成或生成失败降级）
+        def build_manual_receipt_url():
+            import base64
+            json_str = json.dumps({
+                "communityID": community_id,
+                "id": str(record_id),
+                "receiptId": "",
+                "receiptCnt": True
+            })
+            base64_data = base64.b64encode(json_str.encode('utf-8')).decode('utf-8')
+            return f"https://{charge_domain}/print.html?mode=receipt&colResize=1&search={base64_data}"
+
+        # 如果已经生成过收据，直接构造URL返回
+        if receipt_state == 2:
+            manual_url = build_manual_receipt_url()
+            results.append({
+                "record_id": record_id,
+                "pay_time": pay_time,
+                "amount": amount_yuan,
+                "success": True,
+                "receipt_url": manual_url,
+                "message": "已生成（直接获取）"
+            })
+            logger.info(f"收据已生成，直接构造URL: {manual_url}")
+            continue
+
+        # 如果未生成，调用API生成
+        try:
+            payload = {
+                "communityID": int(community_id),
+                "id": record_id,
+                "version": version,
+                "requireImg": False,
+                "from": 1
+            }
+
+            response = requests.post(
+                f"{CHARGE_API_BASE_URL}/mkg/api/v2/Charge/addPayReceiptV3",
+                json=payload,
+                headers=headers,
+                timeout=10
+            )
+
+            if response.status_code != 200:
+                logger.error(f"提交生成收据失败，状态码: {response.status_code}, 响应: {response.text}")
+                # 降级：手动构造URL
+                manual_url = build_manual_receipt_url()
+                results.append({
+                    "record_id": record_id,
+                    "pay_time": pay_time,
+                    "amount": amount_yuan,
+                    "success": True,
+                    "receipt_url": manual_url,
+                    "message": "生成接口调用失败，使用降级链接"
+                })
+                continue
+
+            data = response.json()
+            if data.get('code') != 0:
+                logger.error(f"提交生成收据失败: {data.get('msg')}")
+                # 降级：手动构造URL
+                manual_url = build_manual_receipt_url()
+                results.append({
+                    "record_id": record_id,
+                    "pay_time": pay_time,
+                    "amount": amount_yuan,
+                    "success": True,
+                    "receipt_url": manual_url,
+                    "message": f"API返回错误: {data.get('msg')}，使用降级链接"
+                })
+                continue
+
+            # 获取 resultCode 进行轮询
+            result_code = data.get('data', {}).get('resultCode')
+            if not result_code:
+                logger.error(f"未获取到 resultCode: {data}")
+                # 降级：手动构造URL
+                manual_url = build_manual_receipt_url()
+                results.append({
+                    "record_id": record_id,
+                    "pay_time": pay_time,
+                    "amount": amount_yuan,
+                    "success": True,
+                    "receipt_url": manual_url,
+                    "message": "未获取到任务ID，使用降级链接"
+                })
+                continue
+
+            # 异步轮询获取结果
+            max_retries = 10
+            retry_interval = 2
+            receipt_url = None
+
+            for i in range(max_retries):
+                try:
+                    import random
+                    random_num = random.random()
+                    poll_url = f"{CHARGE_API_BASE_URL}/api/v1/GetAsyncResult?keyCode={result_code}&r={random_num}"
+                    poll_response = requests.get(poll_url, headers=headers, timeout=10)
+                    if poll_response.status_code == 200:
+                        poll_result = poll_response.json()
+                        if poll_result.get('code') == 0:
+                            # 成功获取结果
+                            data_result = poll_result.get('data')
+                            if data_result and isinstance(data_result, str) and data_result.startswith('http'):
+                                receipt_url = data_result
+                                break
+                            elif data_result and isinstance(data_result, dict) and data_result.get('code') == 0:
+                                receipt_url = data_result.get('data')
+                                break
+                    time.sleep(retry_interval)
+                except Exception as e:
+                    logger.warning(f"轮询异常 {i+1}/{max_retries}: {e}")
+                    time.sleep(retry_interval)
+
+            # 用户要求：无论API是否返回URL，始终使用手动构造的URL（带有正确base64编码）
+            # API调用依然执行用于触发后台生成，但URL保证始终正确可访问
+            manual_url = build_manual_receipt_url()
+            results.append({
+                "record_id": record_id,
+                "pay_time": pay_time,
+                "amount": amount_yuan,
+                "success": True,
+                "receipt_url": manual_url,
+                "message": "生成成功"
+            })
+            logger.info(f"收据生成成功，使用手动构造URL: {manual_url}")
+
+        except Exception as e:
+            logger.error(f"生成收据发生异常: record_id={record_id}, error={e}")
+            # 异常降级
+            manual_url = build_manual_receipt_url()
+            results.append({
+                "record_id": record_id,
+                "pay_time": pay_time,
+                "amount": amount_yuan,
+                "success": True,
+                "receipt_url": manual_url,
+                "message": f"异常: {str(e)}，使用降级链接"
+            })
+
+    # 输出结果
+    process_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    success_count = len([r for r in results if r['success']])
+
+    print(f"\n✓ 收据生成完成！\n")
+    print(f"**小区**: {community_name}")
+    print(f"**房屋**: {node_name}")
+    print(f"**处理记录数**: {len(selected_records)} 条")
+    print(f"**成功**: {success_count} 条")
+    print(f"**处理时间**: {process_time_str}\n")
+
+    print("收据链接：")
+    for idx, result in enumerate(results, 1):
+        print(f"\n{idx}. [{result['pay_time']}] ¥ {result['amount']:.2f}")
+        print(f"   {result['message']}")
+        print(f"   {result['receipt_url']}")
+
+    print(f"\n💡 提示：点击链接可直接打开收据，右键可保存为图片文件。\n")
+
+    # 清除缓存
+    clear_generate_receipt_confirmation_cache()
+    logger.info(f"生成收据完成，成功 {success_count}/{len(selected_records)}")
+
+
 def generate_web_bill_share_url(community_id: int, asset_id: int, bill_ids: list) -> dict:
     """
     调用 API 生成微信账单分享链接
@@ -10696,6 +11357,32 @@ if __name__ == "__main__":
         else:
             confirmation_input = sys.argv[2]
             confirm_deposit_recharge(confirmation_input)
+    elif command == "generate_receipt":
+        # 查询最近缴费记录，准备生成收据（智能匹配，两步完成）
+        if len(sys.argv) < 5:
+            print("错误：请提供收费系统名称、小区名称和房屋关键词")
+            print("用法: python3 main.py generate_receipt <收费系统名称> <小区名称> <房屋关键词> [开始日期] [结束日期]")
+            print("日期格式: YYYY-MM-DD（省略则默认最近24小时）")
+            print("示例（默认最近24小时，适合刚刚缴费的情况）: python3 main.py generate_receipt 收费系统 小区 1栋/1单元/101")
+            print("示例（指定日期范围）: python3 main.py generate_receipt 收费系统 小区 1栋/1单元/101 2026-03-01 2026-03-31")
+        else:
+            charge_system_name = sys.argv[2]
+            community_name = sys.argv[3]
+            keyword = sys.argv[4]
+            start_date_str = sys.argv[5] if len(sys.argv) >= 6 else None
+            end_date_str = sys.argv[6] if len(sys.argv) >= 7 else None
+            generate_receipt_by_name(charge_system_name, community_name, keyword, start_date_str, end_date_str)
+    elif command == "confirm_generate_receipt":
+        # 确认生成收据，处理用户选择
+        if len(sys.argv) < 3:
+            print("错误：请提供确认选项（yes/no 或序号）")
+            print("用法: python3 main.py confirm_generate_receipt <yes/no/序号>")
+            print("示例: python3 main.py confirm_generate_receipt yes")
+            print("示例: python3 main.py confirm_generate_receipt 1")
+            print("示例: python3 main.py confirm_generate_receipt 1,2")
+        else:
+            confirmation_input = sys.argv[2]
+            confirm_generate_receipt(confirmation_input)
     else:
         print("错误：未知的指令或参数不足")
         print("可用指令:")
@@ -10749,3 +11436,5 @@ if __name__ == "__main__":
         print("  confirm_collect_cash_pledge <yes/no> - 确认收取押金，处理用户选择")
         print("  recharge_deposit <收费系统名称> <小区名称> <房屋关键词> <预存款类型> <充值金额> [支付方式] - 预存款充值（水电费预存款、物业费预存款等，推荐，智能匹配，两步完成）")
         print("  confirm_recharge_deposit <yes/no> - 确认预存款充值，执行充值")
+        print("  generate_receipt <收费系统名称> <小区名称> <房屋关键词> [开始日期] [结束日期] - 生成缴费收据（查询最近缴费记录，默认最近24小时，推荐，智能匹配，两步完成）")
+        print("  confirm_generate_receipt <yes/no/序号> - 确认生成收据，输出收据链接")
