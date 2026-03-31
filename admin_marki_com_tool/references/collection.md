@@ -1307,7 +1307,7 @@ python3 main.py confirm_generate_receipt no
    生成成功
    https://charge-api-test.markiapp.com/receipt/def456.png
 
-💡 提示：点击链接可直接打开收据，右键可保存为图片文件。
+💡 提示：点击链接可直接打开收据。
 ```
 
 **生成失败会输出错误信息，如果API生成失败会自动降级使用手动构造链接，依然可以访问。**

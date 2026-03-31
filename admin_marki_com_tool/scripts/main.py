@@ -8825,7 +8825,8 @@ def generate_receipt_for_house(community_id: str, asset_id: str, asset_type: int
             remark = record.get('remark', '')
             remark_text = f" - {remark}" if remark else ""
             # 从 payItems 提取收费项目名称（API 返回格式：[{"name": "电费押金", "amount": 100000}, ...]）
-            charge_item_names = [item.get('name', '') for item in record.get('payItems', []) if item.get('name')]
+            pay_items = record.get('payItems') or []
+            charge_item_names = [item.get('name', '') for item in pay_items if item.get('name')]
             # 如果 payItemStr 存在也一并使用
             pay_item_str = record.get('payItemStr', '')
             if pay_item_str and not charge_item_names:
