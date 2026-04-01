@@ -108,6 +108,7 @@ pip install -r {baseDir}/requirements.txt
 
 本技能采用模块化设计，根据查询类型读取对应模块文档：
 
+
 | 模块 | 功能 | 文件位置 |
 |------|------|----------|
 | [欠费查询](./references/arrears.md) | 小区欠费总额、本年度物业费欠费、自定义范围欠费、楼栋/单元/房屋欠费、欠费户数统计 | `{baseDir}/references/arrears.md` |
